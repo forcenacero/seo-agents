@@ -1,0 +1,32 @@
+name: Performance Agent
+
+on:
+  schedule:
+    # Cada día a las 5:00 UTC (7:00 hora española en verano, 6:00 en invierno)
+    - cron: '0 5 * * *'
+  workflow_dispatch:  # Permite ejecutarlo manualmente desde GitHub
+
+jobs:
+  run-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run Performance agent
+        env:
+          DB_API_URL: ${{ secrets.DB_API_URL }}
+          DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
+          GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+        run: python agents/performance.py
