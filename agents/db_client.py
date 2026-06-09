@@ -12,7 +12,7 @@ class DBClient:
         if not self.url or not self.token:
             raise RuntimeError("Faltan DB_API_URL o DB_API_TOKEN en el entorno")
 
-    def _call(self, action, sql, params=None):
+    def _post(self, payload, timeout=30):
         response = requests.post(
             self.url,
             headers={
@@ -21,20 +21,16 @@ class DBClient:
                 'User-Agent': 'SEO-Agents/1.0 (compatible; PHP-API-Client)',
                 'X-Api-Token': self.token
             },
-            json={
-                'action': action,
-                'sql': sql,
-                'params': params or []
-            },
-            timeout=30
+            json=payload,
+            timeout=timeout
         )
         if response.status_code != 200:
-            raise RuntimeError(f"API error {response.status_code}: {response.text}")
+            raise RuntimeError(f"API error {response.status_code}: {response.text[:500]}")
         return response.json()
 
     def query(self, sql, params=None):
         """SELECT que devuelve lista de dicts."""
-        return self._call('query', sql, params)['rows']
+        return self._post({'action': 'query', 'sql': sql, 'params': params or []})['rows']
 
     def query_one(self, sql, params=None):
         """SELECT que devuelve el primer dict o None."""
@@ -42,5 +38,17 @@ class DBClient:
         return rows[0] if rows else None
 
     def execute(self, sql, params=None):
-        """INSERT/UPDATE/DELETE. Devuelve {'affected': N, 'last_id': X}."""
-        return self._call('execute', sql, params)
+        """INSERT/UPDATE/DELETE de una sola fila."""
+        return self._post({'action': 'execute', 'sql': sql, 'params': params or []})
+
+    def execute_many(self, sql, params_batch, batch_size=50):
+        """INSERT/UPDATE/DELETE en lote. Trocea automáticamente en bloques de batch_size filas."""
+        total = 0
+        for i in range(0, len(params_batch), batch_size):
+            chunk = params_batch[i:i+batch_size]
+            result = self._post(
+                {'action': 'execute', 'sql': sql, 'params_batch': chunk},
+                timeout=60
+            )
+            total += result.get('affected', 0)
+        return total
