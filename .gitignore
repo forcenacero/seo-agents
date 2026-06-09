@@ -1,0 +1,8 @@
+.env
+credentials/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+test_conn.py
+test_gsc.py
