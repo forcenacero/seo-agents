@@ -6,3 +6,7 @@ __pycache__/
 .DS_Store
 test_conn.py
 test_gsc.py
+
+# CSVs con credenciales de clientes
+*.csv
+data/
