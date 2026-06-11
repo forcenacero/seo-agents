@@ -24,13 +24,30 @@ class DBClient:
             json=payload,
             timeout=timeout
         )
+        
+        # Mensaje de error con HTTP status
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:500]}")
-        return response.json()
+        
+        # Verificar que la respuesta es JSON válido
+        try:
+            data = response.json()
+        except Exception:
+            raise RuntimeError(f"Respuesta no es JSON: {response.text[:500]}")
+        
+        # Si el endpoint devuelve un error explícito en el JSON, mostrarlo claro
+        if isinstance(data, dict) and 'error' in data:
+            detail = data.get('detail', 'sin detalle')
+            raise RuntimeError(f"API devolvió error: {data['error']} | Detalle: {detail}")
+        
+        return data
 
     def query(self, sql, params=None):
         """SELECT que devuelve lista de dicts."""
-        return self._post({'action': 'query', 'sql': sql, 'params': params or []})['rows']
+        result = self._post({'action': 'query', 'sql': sql, 'params': params or []})
+        if 'rows' not in result:
+            raise RuntimeError(f"Respuesta inesperada (sin 'rows'): {str(result)[:300]}")
+        return result['rows']
 
     def query_one(self, sql, params=None):
         """SELECT que devuelve el primer dict o None."""
