@@ -17,9 +17,13 @@ class DBClient:
             self.url,
             headers={
                 'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'User-Agent': 'SEO-Agents/1.0 (compatible; PHP-API-Client)',
-                'X-Api-Token': self.token
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SEO-Agents/1.0',
+                'X-Api-Token': self.token,
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive'
             },
             json=payload,
             timeout=timeout
@@ -39,6 +43,10 @@ class DBClient:
         if isinstance(data, dict) and 'error' in data:
             detail = data.get('detail', 'sin detalle')
             raise RuntimeError(f"API devolvió error: {data['error']} | Detalle: {detail}")
+        
+        # Imunify360 a veces devuelve 200 OK pero con un 'message' de bloqueo
+        if isinstance(data, dict) and 'message' in data and 'denied' in str(data.get('message', '')).lower():
+            raise RuntimeError(f"Bloqueado por firewall: {data['message']}")
         
         return data
 
