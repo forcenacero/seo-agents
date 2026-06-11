@@ -1,6 +1,7 @@
 """
 Agente Estratega - Lee todos los datos del cliente y genera tareas SEO priorizadas usando Gemini.
 Soporta modo masivo (todos los clientes activos) y modo bajo demanda (un cliente concreto).
+Vincula URLs concretas afectadas a cada tarea técnica.
 """
 import os
 import sys
@@ -17,7 +18,6 @@ load_dotenv()
 db = DBClient()
 
 
-# === Configuración de Gemini ===
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if not GEMINI_API_KEY:
     print("ERROR: Falta GEMINI_API_KEY en .env o en secrets")
@@ -27,7 +27,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 MODEL_NAME = 'gemini-3.5-flash'
 
 
-# === Tipos de tareas de bajo riesgo (auto-aprobables) ===
 LOW_RISK_TYPES = {
     'add_meta_description',
     'fix_title_length',
@@ -38,12 +37,21 @@ LOW_RISK_TYPES = {
 }
 
 
-# === Construcción del expediente del cliente ===
+# Mapeo task_type → issue_types del Auditor (para vincular URLs)
+TYPE_TO_ISSUE = {
+    'add_meta_description': ['missing_meta_description', 'short_meta_description'],
+    'fix_title_length': ['short_title', 'long_title', 'missing_title'],
+    'add_alt_to_images': ['images_without_alt'],
+    'add_canonical': ['missing_canonical'],
+    'add_schema': ['missing_schema'],
+    'fix_h1_count': ['missing_h1', 'multiple_h1']
+}
+
+
 def build_client_dossier(client_id):
     """Reúne todos los datos relevantes del cliente para alimentar a Gemini."""
     dossier = {}
     
-    # 1. Ficha del cliente
     client = db.query_one("""
         SELECT id, domain, name, tone_of_voice, seo_criteria
         FROM clients WHERE id = ?
@@ -59,7 +67,6 @@ def build_client_dossier(client_id):
         'seo_criteria': json.loads(client['seo_criteria']) if client['seo_criteria'] else {}
     }
     
-    # 2. Métricas resumen últimos 7 días
     summary = db.query_one("""
         SELECT 
             COALESCE(SUM(total_clicks), 0) AS clicks,
@@ -76,7 +83,6 @@ def build_client_dossier(client_id):
         'avg_position': round(float(summary['avg_position'] or 0), 1)
     }
     
-    # 3. Top oportunidades (keywords pos 5-15)
     opportunities = db.query("""
         SELECT 
             keyword,
@@ -101,7 +107,6 @@ def build_client_dossier(client_id):
         } for o in opportunities
     ]
     
-    # 4. Top páginas con tráfico
     top_pages = db.query("""
         SELECT 
             url,
@@ -125,7 +130,6 @@ def build_client_dossier(client_id):
         } for p in top_pages
     ]
     
-    # 5. Hallazgos técnicos agrupados por tipo
     findings_summary = db.query("""
         SELECT 
             issue_type,
@@ -145,7 +149,6 @@ def build_client_dossier(client_id):
         } for f in findings_summary
     ]
     
-    # 6. URLs concretas con problemas críticos (muestras)
     critical_pages = db.query("""
         SELECT 
             page_url,
@@ -167,7 +170,6 @@ def build_client_dossier(client_id):
         } for p in critical_pages
     ]
     
-    # 7. Tareas previas (para no repetir)
     previous_tasks = db.query("""
         SELECT title, task_type, status
         FROM tasks
@@ -188,7 +190,6 @@ def build_client_dossier(client_id):
     return dossier
 
 
-# === System prompt del Estratega ===
 SYSTEM_PROMPT = """Eres un consultor SEO senior con 15 años de experiencia trabajando con webs B2B en español.
 
 Tu trabajo es analizar los datos de un cliente y generar entre 5 y 10 tareas SEO priorizadas y muy concretas para mejorar su posicionamiento orgánico.
@@ -264,17 +265,11 @@ Reglas estrictas del JSON:
 
 def try_repair_json(text):
     """Intenta reparar un JSON truncado cerrando tareas incompletas."""
-    # Encontrar la última tarea bien formada (cerrada con })
     last_complete_task = text.rfind('    }')
     if last_complete_task == -1:
         return None
-    
-    # Cortar después de la última tarea completa
     truncated = text[:last_complete_task + len('    }')]
-    
-    # Cerrar el array de tasks y el objeto raíz
     repaired = truncated + '\n  ]\n}'
-    
     return repaired
 
 
@@ -292,7 +287,6 @@ Datos del cliente:
 
 Responde SOLO con el JSON estructurado."""
     
-    # Llamada con streaming para feedback en tiempo real
     response_stream = model.generate_content(
         user_prompt,
         generation_config={
@@ -312,7 +306,6 @@ Responde SOLO con el JSON estructurado."""
         if chunk.text:
             raw_text += chunk.text
             chars_received = len(raw_text)
-            # Punto cada 100 caracteres recibidos
             while last_dot + 100 <= chars_received:
                 print('.', end='', flush=True)
                 last_dot += 100
@@ -331,7 +324,6 @@ Responde SOLO con el JSON estructurado."""
         print(f"  ⚠ Error parseando JSON: {e}")
         print(f"  Intentando reparar JSON truncado...")
         
-        # Intento de reparación: cerrar el JSON donde se cortó
         repaired = try_repair_json(raw_text)
         if repaired:
             try:
@@ -346,9 +338,73 @@ Responde SOLO con el JSON estructurado."""
         return None
 
 
-# === Persistencia de tareas ===
+def link_affected_urls(task_id, client_id, task_type):
+    """Vincula las URLs afectadas a una tarea técnica basándose en los hallazgos del Auditor."""
+    if task_type not in TYPE_TO_ISSUE:
+        return 0
+    
+    issue_types = TYPE_TO_ISSUE[task_type]
+    placeholders = ','.join(['?'] * len(issue_types))
+    
+    affected = db.query(f"""
+        SELECT 
+            af.id AS finding_id,
+            af.page_url,
+            af.message,
+            pa.title_length,
+            pa.meta_description_length,
+            pa.h1_count,
+            pa.images_without_alt,
+            pa.has_canonical,
+            pa.has_schema
+        FROM audit_findings af
+        LEFT JOIN page_audits pa ON pa.client_id = af.client_id 
+            AND pa.url = af.page_url
+            AND pa.date = (SELECT MAX(date) FROM page_audits WHERE client_id = af.client_id)
+        WHERE af.client_id = ? 
+            AND af.issue_type IN ({placeholders})
+            AND af.resolved_at IS NULL
+        ORDER BY af.severity, af.detected_at DESC
+        LIMIT 200
+    """, [client_id] + issue_types)
+    
+    linked = 0
+    for aff in affected:
+        if task_type == 'fix_title_length':
+            current_value = f"Title actual: {aff.get('title_length', 0)} caracteres"
+        elif task_type == 'add_meta_description':
+            current_value = f"Meta actual: {aff.get('meta_description_length', 0)} caracteres"
+        elif task_type == 'fix_h1_count':
+            current_value = f"H1 actual: {aff.get('h1_count', 0)} etiquetas"
+        elif task_type == 'add_alt_to_images':
+            current_value = f"Imágenes sin alt: {aff.get('images_without_alt', 0)}"
+        elif task_type == 'add_canonical':
+            current_value = "Falta canonical"
+        elif task_type == 'add_schema':
+            current_value = "Falta schema.org"
+        else:
+            current_value = aff.get('message', '')
+        
+        try:
+            db.execute("""
+                INSERT INTO task_affected_urls 
+                    (task_id, page_url, current_value, finding_id, url_status)
+                VALUES (?, ?, ?, ?, 'pending')
+            """, [
+                task_id,
+                aff['page_url'][:1000],
+                current_value,
+                aff['finding_id']
+            ])
+            linked += 1
+        except Exception as e:
+            print(f"    ⚠ Error vinculando URL: {e}")
+    
+    return linked
+
+
 def save_tasks(client_id, result):
-    """Guarda las tareas generadas. Auto-aprueba las de bajo riesgo."""
+    """Guarda las tareas generadas. Auto-aprueba las de bajo riesgo y vincula URLs afectadas."""
     if not result or 'tasks' not in result:
         return 0, 0
     
@@ -387,6 +443,21 @@ def save_tasks(client_id, result):
             status,
             auto_approve_flag
         ])
+        
+        # Obtener el ID de la tarea recién creada
+        task_id_row = db.query_one("""
+            SELECT id FROM tasks 
+            WHERE client_id = ? AND task_type = ? 
+            ORDER BY id DESC LIMIT 1
+        """, [client_id, task_type])
+        
+        if task_id_row:
+            task_id = task_id_row['id']
+            # Vincular URLs afectadas si es una tarea técnica conocida
+            linked = link_affected_urls(task_id, client_id, task_type)
+            if linked > 0:
+                print(f"    ✓ Tarea {task_id} ({task_type}): {linked} URLs vinculadas")
+        
         saved += 1
     
     return saved, auto_approved
@@ -405,7 +476,6 @@ def save_run(client_id, status, input_summary=None, output_summary=None, error=N
     ])
 
 
-# === Ejecución por cliente ===
 def run_for_client(client_id):
     """Genera tareas para un cliente concreto."""
     client = db.query_one("SELECT name, domain FROM clients WHERE id = ?", [client_id])
@@ -463,7 +533,6 @@ def run_for_client(client_id):
 
 
 def main():
-    """Si se pasa client_id como argumento, ejecuta solo ese. Si no, todos los activos."""
     if len(sys.argv) > 1:
         client_id = int(sys.argv[1])
         print(f"Modo bajo demanda: cliente ID {client_id}")
