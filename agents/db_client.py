@@ -2,7 +2,16 @@
 Cliente para hablar con el endpoint PHP en lugar de conectar directo a MySQL.
 """
 import os
+import gzip
+import zlib
 import requests
+
+# Brotli es opcional; si está instalado, podemos descomprimir respuestas brotli
+try:
+    import brotli
+    HAS_BROTLI = True
+except ImportError:
+    HAS_BROTLI = False
 
 
 class DBClient:
@@ -19,8 +28,9 @@ class DBClient:
                 'Content-Type': 'application/json',
                 'Accept': 'application/json, text/plain, */*',
                 'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SEO-Agents/1.0',
+                # IDENTITY = pedir sin compresión. Si el servidor lo respeta, llega plano.
+                'Accept-Encoding': 'identity',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'X-Api-Token': self.token,
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive'
@@ -33,11 +43,16 @@ class DBClient:
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:500]}")
         
+        # Obtener el cuerpo: si el servidor ignoró identity y comprimió con brotli,
+        # descomprimimos manualmente (requests no lo hace por defecto).
+        raw_text = self._decode_body(response)
+        
         # Verificar que la respuesta es JSON válido
         try:
-            data = response.json()
+            import json
+            data = json.loads(raw_text)
         except Exception:
-            raise RuntimeError(f"Respuesta no es JSON: {response.text[:500]}")
+            raise RuntimeError(f"Respuesta no es JSON: {raw_text[:500]}")
         
         # Si el endpoint devuelve un error explícito en el JSON, mostrarlo claro
         if isinstance(data, dict) and 'error' in data:
@@ -49,6 +64,40 @@ class DBClient:
             raise RuntimeError(f"Bloqueado por firewall: {data['message']}")
         
         return data
+
+    def _decode_body(self, response):
+        """Descomprime el cuerpo si llega comprimido a pesar de Accept-Encoding: identity."""
+        encoding = response.headers.get('Content-Encoding', '').lower()
+        raw_bytes = response.content
+        
+        if encoding == 'br':
+            if not HAS_BROTLI:
+                raise RuntimeError(
+                    "El servidor envió brotli pero la librería 'brotli' no está instalada. "
+                    "Añade 'brotli' a requirements.txt"
+                )
+            try:
+                decoded = brotli.decompress(raw_bytes)
+                return decoded.decode('utf-8', errors='replace')
+            except Exception as e:
+                raise RuntimeError(f"Error descomprimiendo brotli: {e}")
+        
+        if encoding == 'gzip':
+            try:
+                decoded = gzip.decompress(raw_bytes)
+                return decoded.decode('utf-8', errors='replace')
+            except Exception as e:
+                raise RuntimeError(f"Error descomprimiendo gzip: {e}")
+        
+        if encoding == 'deflate':
+            try:
+                decoded = zlib.decompress(raw_bytes)
+                return decoded.decode('utf-8', errors='replace')
+            except Exception as e:
+                raise RuntimeError(f"Error descomprimiendo deflate: {e}")
+        
+        # Sin compresión declarada: usar response.text como siempre
+        return response.text
 
     def query(self, sql, params=None):
         """SELECT que devuelve lista de dicts."""
