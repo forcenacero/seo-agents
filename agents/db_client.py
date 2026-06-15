@@ -19,6 +19,7 @@ class DBClient:
                 'Content-Type': 'application/json',
                 'Accept': 'application/json, text/plain, */*',
                 'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SEO-Agents/1.0',
                 'X-Api-Token': self.token,
                 'Cache-Control': 'no-cache',
