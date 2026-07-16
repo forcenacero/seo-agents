@@ -245,7 +245,7 @@ def save_suggestion(url_id, suggested_value=None, notes=None):
     """, [suggested_value, notes, url_id])
 
 
-def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN):
+def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=None):
     client = db.query_one("SELECT id, name, domain, tone_of_voice, gsc_property FROM clients WHERE id = ?", [client_id])
     if not client:
         print(f"  ⚠ Cliente {client_id} no encontrado")
@@ -258,23 +258,47 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN):
     start_d, end_d = gsc_date_range()
     print(f"  Search Console: {'activo (' + prop + ')' if (service and prop) else 'no disponible → solo contenido'}")
 
-    work = db.query("""
-        SELECT tau.id, tau.page_url, tau.current_value, t.task_type, t.related_keyword
-        FROM task_affected_urls tau
-        INNER JOIN tasks t ON t.id = tau.task_id
-        WHERE t.client_id = ?
+    type_sql = ""
+    type_params = []
+    if only_types:
+        placeholders = ','.join(['?'] * len(only_types))
+        type_sql = f" AND t.task_type IN ({placeholders})"
+        type_params = list(only_types)
+        print(f"  Filtro de tipos: {', '.join(only_types)}")
+
+    base_where = """t.client_id = ?
           AND t.status = 'approved'
           AND tau.url_status = 'pending'
-          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')
-        ORDER BY FIELD(t.priority, 'critical', 'high', 'medium', 'low'), tau.id
-        LIMIT ?
-    """, [client_id, limit])
+          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')""" + type_sql
 
-    if not work:
+    # Paso 1: URLs ÚNICAS pendientes (el límite cuenta páginas, no filas duplicadas)
+    url_rows = db.query(f"""
+        SELECT tau.page_url
+        FROM task_affected_urls tau
+        INNER JOIN tasks t ON t.id = tau.task_id
+        WHERE {base_where}
+        GROUP BY tau.page_url
+        ORDER BY MIN(FIELD(t.priority, 'critical', 'high', 'medium', 'low')), MIN(tau.id)
+        LIMIT ?
+    """, [client_id] + type_params + [limit])
+
+    if not url_rows:
         print("  ✓ Nada pendiente por generar.")
         return {'generated': 0, 'canonical': 0}
 
-    print(f"  {len(work)} URLs a procesar (tope {limit})")
+    wanted_urls = [r['page_url'] for r in url_rows]
+
+    # Paso 2: TODAS las filas pendientes de esas URLs (para actualizar todos los duplicados)
+    ph = ','.join(['?'] * len(wanted_urls))
+    work = db.query(f"""
+        SELECT tau.id, tau.page_url, tau.current_value, t.task_type, t.related_keyword
+        FROM task_affected_urls tau
+        INNER JOIN tasks t ON t.id = tau.task_id
+        WHERE {base_where}
+          AND tau.page_url IN ({ph})
+    """, [client_id] + type_params + wanted_urls)
+
+    print(f"  {len(wanted_urls)} páginas únicas · {len(work)} filas a actualizar")
     stats = {'generated': 0, 'canonical': 0}
 
     # 1) Canonical determinista (sin Gemini) + agrupar el resto por URL para IA
@@ -342,12 +366,20 @@ def main():
     args = [a for a in sys.argv[1:]]
     dry_run = '--dry-run' in args
     limit = MAX_URLS_PER_RUN
+    only_types = None
     skip_idx = set()
     if '--limit' in args:
         idx = args.index('--limit')
         try:
             limit = int(args[idx + 1])
             skip_idx.add(idx + 1)  # el valor del limit no es un client_id
+        except Exception:
+            pass
+    if '--type' in args:
+        idx = args.index('--type')
+        try:
+            only_types = [t.strip() for t in args[idx + 1].split(',') if t.strip()]
+            skip_idx.add(idx + 1)
         except Exception:
             pass
     client_ids = [a for i, a in enumerate(args) if a.isdigit() and i not in skip_idx]
@@ -358,12 +390,12 @@ def main():
 
     if client_ids:
         for cid in client_ids:
-            run_for_client(int(cid), dry_run=dry_run, limit=limit)
+            run_for_client(int(cid), dry_run=dry_run, limit=limit, only_types=only_types)
     else:
         clients = db.query("SELECT id FROM clients WHERE active = 1 ORDER BY id")
         for c in clients:
             try:
-                run_for_client(c['id'], dry_run=dry_run, limit=limit)
+                run_for_client(c['id'], dry_run=dry_run, limit=limit, only_types=only_types)
             except Exception as e:
                 print(f"  ✗ Error cliente {c['id']}: {e}")
 

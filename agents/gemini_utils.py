@@ -12,9 +12,17 @@ import time
 try:
     from google.api_core import exceptions as google_exceptions
     ResourceExhausted = google_exceptions.ResourceExhausted
+    # Errores transitorios del servicio: reintentar con backoff corto
+    TRANSIENT = (
+        google_exceptions.ServiceUnavailable,   # 503
+        google_exceptions.InternalServerError,  # 500
+        google_exceptions.DeadlineExceeded,     # 504 / timeout
+        google_exceptions.GatewayTimeout,       # 504
+    )
 except Exception:  # por si cambia el paquete
     class ResourceExhausted(Exception):
         pass
+    TRANSIENT = ()
 
 
 # Pausa entre clientes en modo masivo. El free-tier de Gemini limita a 5 req/min
@@ -73,4 +81,14 @@ def generate_with_retry(model, user_prompt, generation_config,
                 time.sleep(wait)
             else:
                 print(f"\n    ✗ Rate limit persistente tras {max_retries} intentos.", flush=True)
+                raise
+
+        except TRANSIENT as e:
+            wait = min(5 * attempt, 30)  # backoff corto para errores transitorios (503/500/timeout)
+            if attempt < max_retries:
+                print(f"\n    ⏳ Servicio Gemini no disponible ({type(e).__name__}). "
+                      f"Reintentando en {wait}s (intento {attempt}/{max_retries})...", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"\n    ✗ Servicio Gemini no disponible tras {max_retries} intentos.", flush=True)
                 raise
