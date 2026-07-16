@@ -23,6 +23,7 @@ import json
 import re
 import time
 import requests
+from datetime import date, timedelta
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -31,6 +32,7 @@ import google.generativeai as genai
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db_client import DBClient
 from gemini_utils import generate_with_retry
+from gsc_utils import get_gsc_service, fetch_page_queries
 
 load_dotenv()
 db = DBClient()
@@ -55,6 +57,27 @@ MANUAL_NOTE = {
     'add_schema': 'Schema suele gestionarlo Yoast a nivel global; revisar plantilla/plugin.',
     'fix_h1_count': 'El H1 vive en el contenido/plantilla; requiere edición manual del tema.',
 }
+
+# Servicio GSC cacheado (se crea una vez por ejecución)
+_GSC = {'service': None, 'tried': False}
+
+
+def gsc_service():
+    if not _GSC['tried']:
+        _GSC['tried'] = True
+        try:
+            _GSC['service'] = get_gsc_service()
+        except Exception as e:
+            print(f"  ⚠ Search Console no disponible: {e}")
+            _GSC['service'] = None
+    return _GSC['service']
+
+
+def gsc_date_range():
+    """GSC tiene ~2-3 días de lag; usamos los últimos 90 días hasta hace 3 días."""
+    end_d = date.today() - timedelta(days=3)
+    start_d = end_d - timedelta(days=90)
+    return start_d, end_d
 
 
 def fetch_page_context(url):
@@ -106,16 +129,24 @@ def generate_ai_values(client, batch):
             'h1': item['ctx'].get('h1', ''),
             'current_meta': item['ctx'].get('meta_description', ''),
             'keyword': item.get('related_keyword') or '',
-            'content_excerpt': item['ctx'].get('text_excerpt', '')[:1200],
+            # Búsquedas REALES de Search Console por las que rankea esta página
+            'search_console_queries': item.get('real_queries', []),
+            'content_excerpt': item['ctx'].get('text_excerpt', '')[:1000],
         })
 
     system_prompt = f"""Eres un copywriter SEO senior para {client['name']} (web B2B en español).
 Tono de la marca: {client.get('tone_of_voice') or 'profesional, claro, orientado a negocio'}.
 
+Cada página incluye "search_console_queries": las BÚSQUEDAS REALES de Google Search Console
+por las que ya recibe impresiones (con clics, impresiones y posición media). PRIORIZA esas
+búsquedas reales al redactar, sobre todo las de más impresiones y posición 5-20 (donde mejorar
+el CTR con un buen meta/title tiene más impacto). Si no hay queries reales, usa el contenido.
+
 Para cada página, genera SOLO lo que se pide (need_meta / need_title):
-- meta_description: 120-155 caracteres, incluye la keyword si la hay, con gancho y CTA suave. Sin comillas.
-- seo_title: 35-60 caracteres, incluye keyword al principio si aplica. NO añadas el nombre de la marca
-  (Yoast lo agrega con la plantilla). Sin comillas.
+- meta_description: 120-155 caracteres, integra de forma natural las búsquedas reales principales,
+  con gancho y CTA suave. Sin comillas.
+- seo_title: 35-60 caracteres, empieza por la búsqueda real más relevante si encaja. NO añadas el
+  nombre de la marca (Yoast lo agrega con la plantilla). Sin comillas.
 
 Responde SOLO con JSON válido:
 {{
@@ -126,7 +157,7 @@ Responde SOLO con JSON válido:
 Reglas:
 - Incluye en cada objeto solo los campos solicitados para esa URL (omite el que no se pida).
 - Respeta los límites de longitud EXACTAMENTE.
-- Español natural, nada de relleno genérico.
+- Español natural, nada de relleno genérico. No inventes servicios que la página no ofrece.
 """
     user_prompt = "Páginas:\n" + json.dumps(pages, ensure_ascii=False, indent=2)
 
@@ -169,12 +200,20 @@ def save_suggestion(url_id, suggested_value=None, notes=None):
 
 
 def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN):
-    client = db.query_one("SELECT id, name, domain, tone_of_voice FROM clients WHERE id = ?", [client_id])
+    client = db.query_one("SELECT id, name, domain, tone_of_voice, gsc_property FROM clients WHERE id = ?", [client_id])
     if not client:
         print(f"  ⚠ Cliente {client_id} no encontrado")
         return {'generated': 0, 'manual': 0, 'canonical': 0}
 
     print(f"\n{'='*60}\n  Optimizador · {client['name']} ({client['domain']}){'  [DRY-RUN]' if dry_run else ''}\n{'='*60}")
+
+    service = gsc_service()
+    prop = client.get('gsc_property')
+    start_d, end_d = gsc_date_range()
+    if service and prop:
+        print(f"  Search Console activo ({prop}) — usando búsquedas reales")
+    else:
+        print("  ⚠ Sin Search Console — se generará solo con el contenido")
 
     work = db.query("""
         SELECT tau.id, tau.page_url, tau.current_value, t.task_type, t.related_keyword
@@ -229,9 +268,15 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN):
         if not ctx:
             print(f"    ⚠ No se pudo leer {url[:60]}")
             continue
+        real_queries = []
+        if service and prop:
+            real_queries = fetch_page_queries(service, prop, url, start_d, end_d, limit=12)
+            time.sleep(0.2)
+            if real_queries:
+                print(f"    · {url[:42]}: {len(real_queries)} queries GSC (top: “{real_queries[0]['query']}”)")
         e = ai_pending[url]
         batch.append({'url': url, 'need_meta': e['need_meta'], 'need_title': e['need_title'],
-                      'ctx': ctx, 'related_keyword': e['related_keyword']})
+                      'ctx': ctx, 'related_keyword': e['related_keyword'], 'real_queries': real_queries})
         # procesar batch lleno o al final
         if len(batch) >= GEMINI_BATCH or i == len(urls) - 1:
             if batch:
