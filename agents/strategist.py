@@ -367,7 +367,11 @@ def link_affected_urls(task_id, client_id, task_type):
     """, [client_id] + issue_types)
     
     linked = 0
+    seen_urls = set()  # evita duplicar la misma URL (los hallazgos se acumulan entre auditorías)
     for aff in affected:
+        if aff['page_url'] in seen_urls:
+            continue
+        seen_urls.add(aff['page_url'])
         if task_type == 'fix_title_length':
             current_value = f"Title actual: {aff.get('title_length', 0)} caracteres"
         elif task_type == 'add_meta_description':
