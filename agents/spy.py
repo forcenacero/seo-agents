@@ -22,6 +22,7 @@ import google.generativeai as genai
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db_client import DBClient
+from gemini_utils import generate_with_retry, PACING_SPY
 
 load_dotenv()
 db = DBClient()
@@ -341,21 +342,18 @@ def call_gemini(system_prompt, user_prompt, max_tokens=8000, expect_json=True, l
         }
         if expect_json:
             config['response_mime_type'] = 'application/json'
-        
-        response_stream = model.generate_content(user_prompt, generation_config=config, stream=True)
+
         print(f'    {label} ', end='', flush=True)
-        raw_text = ''
-        chars = 0
-        last_dot = 0
-        for chunk in response_stream:
-            if chunk.text:
-                raw_text += chunk.text
-                chars = len(raw_text)
-                while last_dot + 200 <= chars:
-                    print('.', end='', flush=True)
-                    last_dot += 200
-        print(f" [{chars} car.]")
-        
+        progress = {'last_dot': 0}
+
+        def on_progress(chars):
+            while progress['last_dot'] + 200 <= chars:
+                print('.', end='', flush=True)
+                progress['last_dot'] += 200
+
+        raw_text = generate_with_retry(model, user_prompt, config, on_progress=on_progress)
+        print(f" [{len(raw_text)} car.]")
+
         if expect_json:
             return json.loads(raw_text.strip())
         return raw_text.strip()
@@ -972,12 +970,16 @@ def main():
             INNER JOIN competitors comp ON comp.client_id = c.id
             WHERE c.active = 1 AND comp.active = 1
         """)
-        for client in clients:
+        for i, client in enumerate(clients):
             try:
                 run_for_client(client['id'])
             except Exception as e:
                 print(f"Error con cliente {client['id']}: {e}")
                 continue
+            # Pausa entre clientes para no saturar el límite de 5 req/min de Gemini
+            if i < len(clients) - 1:
+                print(f"  ⏸  Pausa de {PACING_SPY}s antes del siguiente cliente...")
+                time.sleep(PACING_SPY)
 
 
 if __name__ == '__main__':

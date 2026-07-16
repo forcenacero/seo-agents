@@ -10,3 +10,7 @@ test_gsc.py
 # CSVs con credenciales de clientes
 *.csv
 data/
+
+# Backend PHP recuperado (backup local, no forma parte del pipeline de agentes)
+_backend_recuperado/
+seo-agents-resumen-y-pendientes.md

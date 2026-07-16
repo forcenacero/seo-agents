@@ -12,7 +12,7 @@ on:
 jobs:
   run-strategist:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45  # margen para pausa ~3 min entre clientes (free-tier Gemini)
     
     steps:
       - name: Checkout code

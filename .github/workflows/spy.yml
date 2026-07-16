@@ -11,7 +11,7 @@ on:
 jobs:
   run-spy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90  # margen para pausa ~4 min entre clientes (free-tier Gemini)
     
     steps:
       - name: Checkout code

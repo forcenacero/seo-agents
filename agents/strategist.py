@@ -7,12 +7,14 @@ import os
 import sys
 import json
 import re
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db_client import DBClient
+from gemini_utils import generate_with_retry, PACING_STRATEGIST
 
 load_dotenv()
 db = DBClient()
@@ -287,30 +289,26 @@ Datos del cliente:
 
 Responde SOLO con el JSON estructurado."""
     
-    response_stream = model.generate_content(
+    print("  ", end='', flush=True)
+    progress = {'last_dot': 0}
+
+    def on_progress(chars_received):
+        while progress['last_dot'] + 100 <= chars_received:
+            print('.', end='', flush=True)
+            progress['last_dot'] += 100
+
+    raw_text = generate_with_retry(
+        model,
         user_prompt,
         generation_config={
             'temperature': 0.3,
             'max_output_tokens': 8000,
             'response_mime_type': 'application/json'
         },
-        stream=True
+        on_progress=on_progress
     )
-    
-    print("  ", end='', flush=True)
-    raw_text = ''
-    chars_received = 0
-    last_dot = 0
-    
-    for chunk in response_stream:
-        if chunk.text:
-            raw_text += chunk.text
-            chars_received = len(raw_text)
-            while last_dot + 100 <= chars_received:
-                print('.', end='', flush=True)
-                last_dot += 100
-    
-    print(f" [{chars_received} caracteres recibidos]")
+
+    print(f" [{len(raw_text)} caracteres recibidos]")
     
     raw_text = raw_text.strip()
     
@@ -540,11 +538,15 @@ def main():
     else:
         clients = db.query("SELECT id FROM clients WHERE active = 1")
         print(f"Modo masivo: {len(clients)} clientes activos")
-        for client in clients:
+        for i, client in enumerate(clients):
             try:
                 run_for_client(client['id'])
             except Exception:
                 continue
+            # Pausa entre clientes para no saturar el límite de 5 req/min de Gemini
+            if i < len(clients) - 1:
+                print(f"  ⏸  Pausa de {PACING_STRATEGIST}s antes del siguiente cliente...")
+                time.sleep(PACING_STRATEGIST)
 
 
 if __name__ == '__main__':
