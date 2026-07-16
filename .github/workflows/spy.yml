@@ -1,6 +1,11 @@
 name: Spy Agent
 
 on:
+  schedule:
+    # Escalonado 2 días/semana (lunes y jueves) a las 10:00 UTC. El Espía hace
+    # ~3 llamadas Gemini por cliente; no lo lanzamos a diario para no agotar el
+    # tope diario del free-tier. Modo masivo: todos los clientes con competidores.
+    - cron: '0 10 * * 1,4'
   workflow_dispatch:
     inputs:
       client_id:

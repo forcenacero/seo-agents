@@ -1,7 +1,11 @@
 name: Strategist Agent
 
 on:
-  # Solo ejecución manual: bajo demanda desde el dashboard o desde GitHub UI
+  schedule:
+    # Diario a las 8:00 UTC: tras el reset del tope diario de Gemini (~07-08 UTC)
+    # y tras Performance (5:00) y Auditor (6:00). Modo masivo: todos los clientes.
+    - cron: '0 8 * * *'
+  # También bajo demanda desde el dashboard o GitHub UI
   workflow_dispatch:
     inputs:
       client_id:
