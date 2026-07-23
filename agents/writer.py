@@ -150,6 +150,10 @@ Escribe un contenido COMPLETO listo para publicar (800-1400 palabras) en HTML se
   "internal_link_targets". Usa EXCLUSIVAMENTE esas URLs reales (nunca inventes rutas).
   El texto ancla debe ser natural y describir el destino (nada de "haz clic aquí").
   Reparte los enlaces en distintas secciones; no enlaces la misma URL dos veces.
+- FAQ OBLIGATORIA (mejora la visibilidad en IA): termina con una sección
+  <h2>Preguntas frecuentes</h2> y 3-5 preguntas reales del sector, cada una con su
+  <h3>¿pregunta?</h3> seguida de un <p> con respuesta directa y concisa (2-4 frases).
+  Las mismas preguntas/respuestas deben ir también en el schema FAQPage.
 
 Responde SOLO con JSON válido:
 {{
@@ -162,11 +166,19 @@ Responde SOLO con JSON válido:
   "content_html": "<h2>...</h2><p>...</p>...",
   "schema": {{
     "@context": "https://schema.org",
-    "@type": "BlogPosting para post / Service para landing",
-    "name": "...",
-    "description": "...",
-    "keywords": "...",
-    "provider": {{"@type": "Organization", "name": "{client['name']}"}}
+    "@graph": [
+      {{
+        "@type": "BlogPosting (si post) o Service (si landing)",
+        "name": "...", "description": "...", "keywords": "...",
+        "provider": {{"@type": "Organization", "name": "{client['name']}"}}
+      }},
+      {{
+        "@type": "FAQPage",
+        "mainEntity": [
+          {{"@type": "Question", "name": "¿pregunta?", "acceptedAnswer": {{"@type": "Answer", "text": "respuesta directa"}}}}
+        ]
+      }}
+    ]
   }},
   "topic_reason": "1 frase: por qué este tema y tipo (keyword/impresiones o gap de competidor)"
 }}
