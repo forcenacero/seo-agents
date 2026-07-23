@@ -111,28 +111,38 @@ Elige UN tema de blog que maximice el SEO combinando:
 - "competitor_topics": temas que cubren competidores y nosotros no (rellenar gaps).
 Prioriza temas con intención informacional/comercial claros y NO repitas nada de "already_covered".
 
-Escribe un ARTÍCULO COMPLETO listo para publicar (800-1400 palabras) en HTML semántico:
+Primero DECIDE el tipo de contenido ("content_type"):
+- "post": artículo informativo de blog (guías, "qué es", "cómo", tendencias). Ideal para
+  intención informacional y para keywords/temas educativos.
+- "landing": página de servicio orientada a conversión (describe un servicio/solución que
+  ofrece la empresa, con beneficios, proceso, aplicaciones y CTA claro). Ideal cuando la
+  oportunidad es comercial/transaccional o el competidor tiene una landing de ese servicio.
+
+Escribe un contenido COMPLETO listo para publicar (800-1400 palabras) en HTML semántico:
 - Solo el cuerpo: <h2>, <h3>, <p>, <ul>/<li>, <strong>. SIN <h1> (el título va aparte). SIN <html>/<body>.
-- Estructura clara, útil y específica del sector. Nada de relleno genérico ni inventar datos/cifras.
+- Si es "landing": estructura orientada a venta (introducción con propuesta de valor,
+  beneficios, proceso/cómo trabajamos, aplicaciones/sectores, y un cierre con CTA).
+- Si es "post": estructura informativa y útil.
+- Específico del sector. Nada de relleno genérico ni inventar datos/cifras.
 - Integra de forma natural la keyword principal y variantes reales.
 
 Responde SOLO con JSON válido:
 {{
-  "title": "Título del post (55-65 caracteres, con la keyword)",
+  "content_type": "post" | "landing",
+  "title": "Título (55-65 caracteres, con la keyword)",
   "focus_keyword": "keyword principal",
   "slug": "slug-url-corto",
   "meta_description": "120-155 caracteres con la keyword y un CTA",
   "content_html": "<h2>...</h2><p>...</p>...",
   "schema": {{
     "@context": "https://schema.org",
-    "@type": "BlogPosting",
-    "headline": "...",
+    "@type": "BlogPosting para post / Service para landing",
+    "name": "...",
     "description": "...",
     "keywords": "...",
-    "author": {{"@type": "Organization", "name": "{client['name']}"}},
-    "publisher": {{"@type": "Organization", "name": "{client['name']}"}}
+    "provider": {{"@type": "Organization", "name": "{client['name']}"}}
   }},
-  "topic_reason": "1 frase: por qué este tema (keyword/impresiones o gap de competidor)"
+  "topic_reason": "1 frase: por qué este tema y tipo (keyword/impresiones o gap de competidor)"
 }}
 """
     user_prompt = "Oportunidades del cliente:\n" + json.dumps(opps, ensure_ascii=False, indent=2)
@@ -166,7 +176,11 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
         schema['description'] = schema.get('description') or art.get('meta_description')
     schema_json = json.dumps(schema, ensure_ascii=False) if schema else None
 
-    print(f"  ✍  \"{art.get('title')}\"  → {scheduled_for}  (kw: {art.get('focus_keyword')})")
+    ctype = art.get('content_type', 'post')
+    if ctype not in ('post', 'landing'):
+        ctype = 'post'
+
+    print(f"  ✍  [{ctype.upper()}] \"{art.get('title')}\"  → {scheduled_for}  (kw: {art.get('focus_keyword')})")
     print(f"     razón: {art.get('topic_reason', '')}")
     print(f"     {len(art.get('content_html', ''))} car. de contenido · slug: {slug}")
     if dry_run:
@@ -175,10 +189,11 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
         INSERT INTO content_drafts
             (client_id, title, content_type, target_keyword, draft_content,
              meta_description, slug, seo_schema, status, scheduled_for, generated_by)
-        VALUES (?, ?, 'blog_post', ?, ?, ?, ?, ?, 'pending_review', ?, 'writer')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, 'writer')
     """, [
         client_id,
         (art.get('title') or '')[:500],
+        ctype,
         (art.get('focus_keyword') or '')[:500],
         art.get('content_html') or '',
         (art.get('meta_description') or '')[:500],
@@ -224,7 +239,9 @@ def main():
         for cid in client_ids:
             run_for_client(int(cid), dry_run=dry_run)
     else:
-        clients = db.query("SELECT id FROM clients WHERE active = 1 ORDER BY id")
+        clients = db.query("SELECT id FROM clients WHERE active = 1 AND content_enabled = 1 ORDER BY id")
+        if not clients:
+            print("Sin clientes con 'Generar publicaciones' activado.")
         for i, c in enumerate(clients):
             try:
                 run_for_client(c['id'], dry_run=dry_run)
