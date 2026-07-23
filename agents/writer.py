@@ -155,6 +155,7 @@ Responde SOLO con JSON válido:
 {{
   "content_type": "post" | "landing",
   "title": "Título (55-65 caracteres, con la keyword)",
+  "hook": "Frase gancho de 5-9 palabras para la imagen destacada (impactante, directa, sin comillas ni punto final)",
   "focus_keyword": "keyword principal",
   "slug": "slug-url-corto",
   "meta_description": "120-155 caracteres con la keyword y un CTA",
@@ -213,8 +214,8 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
     db.execute("""
         INSERT INTO content_drafts
             (client_id, title, content_type, target_keyword, draft_content,
-             meta_description, slug, seo_schema, status, scheduled_for, generated_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, 'writer')
+             meta_description, image_hook, slug, seo_schema, status, scheduled_for, generated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, 'writer')
     """, [
         client_id,
         (art.get('title') or '')[:500],
@@ -222,6 +223,7 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
         (art.get('focus_keyword') or '')[:500],
         art.get('content_html') or '',
         (art.get('meta_description') or '')[:500],
+        (art.get('hook') or art.get('title') or '')[:255],
         slug[:200],
         schema_json,
         scheduled_for.isoformat(),
