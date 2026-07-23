@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import re
+import time
 from datetime import date, timedelta
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -224,11 +225,13 @@ def main():
             run_for_client(int(cid), dry_run=dry_run)
     else:
         clients = db.query("SELECT id FROM clients WHERE active = 1 ORDER BY id")
-        for c in clients:
+        for i, c in enumerate(clients):
             try:
                 run_for_client(c['id'], dry_run=dry_run)
             except Exception as e:
                 print(f"  ✗ Error cliente {c['id']}: {e}")
+            if i < len(clients) - 1:
+                time.sleep(20)  # espaciar para no saturar el límite por minuto de Gemini
 
 
 if __name__ == '__main__':

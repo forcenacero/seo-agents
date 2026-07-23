@@ -1,0 +1,44 @@
+name: Writer Agent
+
+on:
+  schedule:
+    # Miércoles a las 9:00 UTC. Propone 1 post de blog por cliente (según Search Console
+    # + gaps de competidores). Se guarda en content_drafts como pending_review para
+    # revisar/editar/publicar desde el calendario del dashboard.
+    - cron: '0 9 * * 3'
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: 'ID del cliente (vacío = todos los activos)'
+        required: false
+        type: string
+
+jobs:
+  run-writer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Writer agent
+        env:
+          DB_API_URL: ${{ secrets.DB_API_URL }}
+          DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "${{ github.event.inputs.client_id }}" ]; then
+            python agents/writer.py "${{ github.event.inputs.client_id }}"
+          else
+            python agents/writer.py
+          fi
