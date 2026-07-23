@@ -417,7 +417,19 @@ def save_tasks(client_id, result):
         task_type = task.get('task_type', 'unknown')
         category = task.get('category', 'optimization')
         priority = task.get('priority', 'medium')
-        
+
+        # Anti-duplicados: si ya existe una tarea técnica ABIERTA del mismo tipo, no crear otra
+        if task_type in LOW_RISK_TYPES:
+            existing = db.query_one("""
+                SELECT id FROM tasks
+                WHERE client_id = ? AND task_type = ?
+                  AND status IN ('pending_review', 'approved', 'in_progress')
+                LIMIT 1
+            """, [client_id, task_type])
+            if existing:
+                print(f"    ⏭  '{task_type}' ya tiene una tarea abierta; se omite para no duplicar")
+                continue
+
         is_low_risk = task_type in LOW_RISK_TYPES and category == 'technical'
         status = 'approved' if is_low_risk else 'pending_review'
         auto_approve_flag = 1 if is_low_risk else 0
