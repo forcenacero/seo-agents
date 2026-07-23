@@ -20,6 +20,7 @@ import json
 import re
 import time
 from datetime import date, timedelta
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import google.generativeai as genai
 
@@ -75,10 +76,29 @@ def gather_opportunities(client_id):
           AND generated_at >= DATE_SUB(NOW(), INTERVAL 120 DAY)
     """, [client_id])
 
+    # Páginas reales del cliente (con tráfico) para el enlazado interno
+    pages = db.query("""
+        SELECT url, SUM(impressions) AS impr
+        FROM metrics_pages_daily
+        WHERE client_id = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        GROUP BY url ORDER BY impr DESC LIMIT 60
+    """, [client_id])
+    seen, internal = set(), []
+    for r in pages:
+        path = urlparse(r['url']).path or '/'
+        if path in seen or path in ('/', '/carrito/', '/checkout/', '/cart/'):
+            continue
+        seen.add(path)
+        topic = path.strip('/').replace('-', ' ').replace('/', ' › ')
+        internal.append({'url': r['url'], 'topic': topic})
+        if len(internal) >= 25:
+            break
+
     return {
         'striking_keywords': [{'keyword': s['keyword'], 'position': float(s['pos']), 'impressions': int(s['impr'])} for s in striking],
         'competitor_topics': [{'topic': t['topic'], 'score': int(t['opportunity_score'] or 0), 'why': t['reasoning']} for t in topics],
         'already_covered': [{'title': r['title'], 'keyword': r['target_keyword']} for r in recent],
+        'internal_link_targets': internal,
     }
 
 
@@ -125,6 +145,11 @@ Escribe un contenido COMPLETO listo para publicar (800-1400 palabras) en HTML se
 - Si es "post": estructura informativa y útil.
 - Específico del sector. Nada de relleno genérico ni inventar datos/cifras.
 - Integra de forma natural la keyword principal y variantes reales.
+- ENLAZADO INTERNO OBLIGATORIO: incluye 3-5 enlaces internos en el contenido usando
+  <a href="URL">texto ancla descriptivo</a> hacia las páginas más relacionadas de
+  "internal_link_targets". Usa EXCLUSIVAMENTE esas URLs reales (nunca inventes rutas).
+  El texto ancla debe ser natural y describir el destino (nada de "haz clic aquí").
+  Reparte los enlaces en distintas secciones; no enlaces la misma URL dos veces.
 
 Responde SOLO con JSON válido:
 {{
@@ -215,7 +240,7 @@ def run_for_client(client_id, dry_run=False):
         print("  ⚠ Sin oportunidades de contenido (faltan datos de Search Console/Espía).")
         return
     print(f"  {len(opps['striking_keywords'])} keywords striking · {len(opps['competitor_topics'])} temas de competidores · "
-          f"{len(opps['already_covered'])} ya cubiertos")
+          f"{len(opps['already_covered'])} ya cubiertos · {len(opps.get('internal_link_targets', []))} destinos de enlace interno")
 
     for i in range(POSTS_PER_RUN):
         art = generate_article(client, opps)
