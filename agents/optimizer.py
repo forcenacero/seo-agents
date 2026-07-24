@@ -266,10 +266,12 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=
         type_params = list(only_types)
         print(f"  Filtro de tipos: {', '.join(only_types)}")
 
-    # Multiidioma: NO optimizar URLs con prefijo de idioma (/en/ /fr/…). En TranslatePress las
-    # traducciones NO son posts separados: aplicar meta ahí machacaría el post del idioma por defecto.
-    # Las versiones traducidas se cubren vía TranslatePress + schema por idioma del plugin.
-    lang_skip = r"AND tau.page_url NOT REGEXP '://[^/]+/(en|fr|ca|de|it|pt|eu|gl|nl)(/|$)'"
+    # Multiidioma: NO optimizar URLs de traducción (subcarpeta /en/ /fr/… NI subdominio en.host).
+    # En TranslatePress las traducciones NO son posts separados: aplicar meta ahí machacaría el post
+    # del idioma por defecto. Las traducciones se cubren vía TranslatePress + schema por idioma del plugin.
+    _lc = "en|fr|ca|de|it|pt|eu|gl|nl"
+    lang_skip = (f"AND tau.page_url NOT REGEXP '://[^/]+/({_lc})(/|$)' "
+                 f"AND tau.page_url NOT REGEXP '://({_lc})\\.'")
 
     base_where = """t.client_id = ?
           AND t.status = 'approved'
