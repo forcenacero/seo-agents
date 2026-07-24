@@ -266,10 +266,15 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=
         type_params = list(only_types)
         print(f"  Filtro de tipos: {', '.join(only_types)}")
 
+    # Multiidioma: NO optimizar URLs con prefijo de idioma (/en/ /fr/…). En TranslatePress las
+    # traducciones NO son posts separados: aplicar meta ahí machacaría el post del idioma por defecto.
+    # Las versiones traducidas se cubren vía TranslatePress + schema por idioma del plugin.
+    lang_skip = r"AND tau.page_url NOT REGEXP '://[^/]+/(en|fr|ca|de|it|pt|eu|gl|nl)(/|$)'"
+
     base_where = """t.client_id = ?
           AND t.status = 'approved'
           AND tau.url_status = 'pending'
-          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')""" + type_sql
+          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')""" + type_sql + "\n          " + lang_skip
 
     # Paso 1: URLs ÚNICAS pendientes (el límite cuenta páginas, no filas duplicadas)
     url_rows = db.query(f"""
