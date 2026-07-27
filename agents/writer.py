@@ -41,7 +41,7 @@ db = DBClient()
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.5-flash'
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
 POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '1'))  # 1 post/semana por cliente
 PUBLISH_WEEKDAY = 1  # 0=lunes ... el hueco semanal cae en martes

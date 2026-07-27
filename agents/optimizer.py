@@ -47,7 +47,7 @@ db = DBClient()
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.5-flash'
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 TIMEOUT = 15

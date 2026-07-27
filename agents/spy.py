@@ -36,7 +36,7 @@ REQUEST_DELAY = 0.5
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.5-flash'
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
 
 def normalize_domain(domain):

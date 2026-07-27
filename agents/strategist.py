@@ -26,7 +26,7 @@ if not GEMINI_API_KEY:
     sys.exit(1)
 
 genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.5-flash'
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
 
 LOW_RISK_TYPES = {

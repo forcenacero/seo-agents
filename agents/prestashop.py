@@ -51,7 +51,7 @@ load_dotenv()
 WORKER_URL = os.getenv('WORKER_URL', 'https://seo-agents-proxy.david-0bd.workers.dev').rstrip('/')
 PS_TOKEN   = os.getenv('PS_PROXY_TOKEN', '')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-MODEL_NAME = 'gemini-3.5-flash'
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 DEFAULT_LANG = os.getenv('PS_LANG', '1')          # id de idioma por defecto (1 = español)
 PS_MAX = int(os.getenv('PS_MAX', '25'))           # productos por ejecución
 PACING = float(os.getenv('PS_PACING', '2'))       # segundos entre productos
