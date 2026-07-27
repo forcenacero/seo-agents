@@ -3,8 +3,8 @@ name: Optimizer Agent
 on:
   schedule:
     # Martes y viernes a las 11:00 UTC. Genera sugerencias (suggested_value) para las
-    # tareas técnicas aprobadas. Limitado por OPTIMIZER_MAX_URLS para respetar el
-    # tope diario de Gemini (comparte cuota con el Estratega diario).
+    # tareas técnicas aprobadas. OPTIMIZER_MAX_URLS limita las páginas por cliente y
+    # ejecución (con facturación Gemini activa ya no hay tope diario de 20 req).
     - cron: '0 11 * * 2,5'
   workflow_dispatch:
     inputs:
@@ -37,7 +37,7 @@ jobs:
           DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
-          OPTIMIZER_MAX_URLS: '15'
+          OPTIMIZER_MAX_URLS: '50'
         run: |
           if [ -n "${{ github.event.inputs.client_id }}" ]; then
             python agents/optimizer.py "${{ github.event.inputs.client_id }}"
