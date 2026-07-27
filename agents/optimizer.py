@@ -35,6 +35,12 @@ from db_client import DBClient
 from gemini_utils import generate_with_retry
 from gsc_utils import get_gsc_service, fetch_page_queries
 
+try:
+    from google.api_core.exceptions import ResourceExhausted
+except Exception:  # pragma: no cover
+    class ResourceExhausted(Exception):
+        pass
+
 load_dotenv()
 db = DBClient()
 
@@ -396,13 +402,22 @@ def main():
         sys.exit(1)
 
     if client_ids:
-        for cid in client_ids:
-            run_for_client(int(cid), dry_run=dry_run, limit=limit, only_types=only_types)
+        try:
+            for cid in client_ids:
+                run_for_client(int(cid), dry_run=dry_run, limit=limit, only_types=only_types)
+        except ResourceExhausted:
+            print("\n⏸  Cuota diaria de Gemini agotada. Lo ya generado se ha guardado; "
+                  "reanudará en la próxima ejecución. (Salida OK, no es un fallo.)")
+            return   # exit 0: es el tope del free-tier, no un error
     else:
         clients = db.query("SELECT id FROM clients WHERE active = 1 ORDER BY id")
         for c in clients:
             try:
                 run_for_client(c['id'], dry_run=dry_run, limit=limit, only_types=only_types)
+            except ResourceExhausted:
+                print("\n⏸  Cuota diaria de Gemini agotada. Lo generado se ha guardado; "
+                      "el resto se reanudará mañana. (Salida OK, no es un fallo.)")
+                break   # la cuota es diaria y global: no tiene sentido seguir con más clientes
             except Exception as e:
                 print(f"  ✗ Error cliente {c['id']}: {e}")
 

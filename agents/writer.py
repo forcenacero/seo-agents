@@ -29,6 +29,12 @@ from db_client import DBClient
 from gemini_utils import generate_with_retry
 from gsc_utils import get_gsc_service, fetch_page_queries  # noqa: F401 (por si se amplía)
 
+try:
+    from google.api_core.exceptions import ResourceExhausted
+except Exception:  # pragma: no cover
+    class ResourceExhausted(Exception):
+        pass
+
 load_dotenv()
 db = DBClient()
 
@@ -275,8 +281,12 @@ def main():
         print("ERROR: falta GEMINI_API_KEY")
         sys.exit(1)
     if client_ids:
-        for cid in client_ids:
-            run_for_client(int(cid), dry_run=dry_run)
+        try:
+            for cid in client_ids:
+                run_for_client(int(cid), dry_run=dry_run)
+        except ResourceExhausted:
+            print("\n⏸  Cuota diaria de Gemini agotada. (Salida OK, reanudará en la próxima ejecución.)")
+            return
     else:
         clients = db.query("SELECT id FROM clients WHERE active = 1 AND content_enabled = 1 ORDER BY id")
         if not clients:
@@ -284,6 +294,10 @@ def main():
         for i, c in enumerate(clients):
             try:
                 run_for_client(c['id'], dry_run=dry_run)
+            except ResourceExhausted:
+                print("\n⏸  Cuota diaria de Gemini agotada. Lo generado se ha guardado; "
+                      "el resto se reanudará mañana. (Salida OK, no es un fallo.)")
+                break
             except Exception as e:
                 print(f"  ✗ Error cliente {c['id']}: {e}")
             if i < len(clients) - 1:
