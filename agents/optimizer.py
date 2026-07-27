@@ -49,8 +49,18 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 MODEL_NAME = 'gemini-3.5-flash'
 
-USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SEO-Agents-Optimizer/1.0'
+USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 TIMEOUT = 15
+# Cabeceras de navegador completas: algunos WAF/LiteSpeed devuelven 415/403 si falta Accept
+# o si el User-Agent delata un bot (p. ej. Italifters/PrestaShop). Con esto se comportan como un navegador.
+BROWSER_HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+}
 MAX_URLS_PER_RUN = int(os.getenv('OPTIMIZER_MAX_URLS', '25'))  # tope por ejecución (presupuesto Gemini)
 GEMINI_BATCH = int(os.getenv('OPTIMIZER_BATCH', '5'))          # páginas por llamada a Gemini
 MAX_IMAGES_PER_PAGE = 8                                        # alt: máximo de imágenes por página
@@ -91,7 +101,7 @@ def gsc_date_range():
 def fetch_page_context(url, want_images=False):
     """Descarga la página y extrae title, h1, meta, extracto y (opcional) imágenes sin alt."""
     try:
-        r = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=TIMEOUT, allow_redirects=True)
+        r = requests.get(url, headers=BROWSER_HEADERS, timeout=TIMEOUT, allow_redirects=True)
         if r.status_code >= 400 or 'text/html' not in r.headers.get('Content-Type', ''):
             return None
         soup = BeautifulSoup(r.content, 'lxml')
