@@ -1,0 +1,53 @@
+name: PrestaShop SEO (Italifters)
+
+on:
+  schedule:
+    # Jueves 10:00 UTC. Optimiza la meta (title/description) de productos PrestaShop
+    # con meta débil, vía el Webservice API a través del Cloudflare Worker (esquiva el WAF).
+    # Aplica de verdad (--apply); los productos con meta ya correcta se saltan.
+    - cron: '0 10 * * 4'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Aplicar de verdad (true) o solo previsualizar (false)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      limit:
+        description: 'Nº de productos a revisar'
+        required: false
+        default: '25'
+        type: string
+
+jobs:
+  run-prestashop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run PrestaShop connector
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PS_PROXY_TOKEN: ${{ secrets.PS_PROXY_TOKEN }}
+          WORKER_URL: ${{ secrets.DB_API_URL }}
+          PS_MAX: '25'
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python agents/prestashop.py --apply --limit 25
+          else
+            FLAG=""
+            if [ "${{ github.event.inputs.apply }}" = "true" ]; then FLAG="--apply"; fi
+            python agents/prestashop.py $FLAG --limit "${{ github.event.inputs.limit }}"
+          fi

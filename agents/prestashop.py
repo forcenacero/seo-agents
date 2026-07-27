@@ -112,14 +112,15 @@ def set_lang_cdata(xml, tag, new_value, lang=DEFAULT_LANG):
     return new_xml, n
 
 
-# Campos de solo-lectura que PrestaShop rechaza en un PUT (hay que quitarlos del XML de GET)
+# Campos de solo-lectura que PrestaShop rechaza en un PUT (hay que quitarlos del XML de GET).
+# Ojo: algunos nodos llevan atributos (p. ej. <manufacturer_name notFilterable="true">).
 READONLY_NODES = ['manufacturer_name', 'quantity']
 
 
 def strip_readonly(xml):
     for tag in READONLY_NODES:
-        xml = re.sub(rf'\s*<{tag}>.*?</{tag}>', '', xml, flags=re.S)
-        xml = re.sub(rf'\s*<{tag}/>', '', xml)
+        xml = re.sub(rf'\s*<{tag}(\s[^>]*)?>.*?</{tag}>', '', xml, flags=re.S)
+        xml = re.sub(rf'\s*<{tag}(\s[^>]*)?/>', '', xml)
     return xml
 
 
