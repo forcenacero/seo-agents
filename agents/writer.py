@@ -100,9 +100,18 @@ def gather_opportunities(client_id):
         if len(internal) >= 25:
             break
 
+    # Keywords semilla: TODAS las del cliente por impresiones (sin filtro), para clientes con poco tráfico
+    seed = db.query("""
+        SELECT keyword, ROUND(AVG(position), 1) AS pos, SUM(impressions) AS impr
+        FROM metrics_keywords_daily
+        WHERE client_id = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        GROUP BY keyword ORDER BY impr DESC LIMIT 20
+    """, [client_id])
+
     return {
         'striking_keywords': [{'keyword': s['keyword'], 'position': float(s['pos']), 'impressions': int(s['impr'])} for s in striking],
         'competitor_topics': [{'topic': t['topic'], 'score': int(t['opportunity_score'] or 0), 'why': t['reasoning']} for t in topics],
+        'seed_keywords': [{'keyword': s['keyword'], 'position': float(s['pos'] or 0), 'impressions': int(s['impr'] or 0)} for s in seed],
         'already_covered': [{'title': r['title'], 'keyword': r['target_keyword']} for r in recent],
         'internal_link_targets': internal,
     }
@@ -136,6 +145,12 @@ Elige UN tema de blog que maximice el SEO combinando:
 - "striking_keywords": keywords donde ya rankeamos en posición 8-25 (mejorarlas da tráfico rápido).
 - "competitor_topics": temas que cubren competidores y nosotros no (rellenar gaps).
 Prioriza temas con intención informacional/comercial claros y NO repitas nada de "already_covered".
+
+Si NO hay "striking_keywords" ni "competitor_topics" (cliente con poco tráfico), ELIGE IGUALMENTE un tema
+útil y relevante para el negocio a partir de "seed_keywords" (búsquedas reales del cliente, aunque tengan
+pocas impresiones) y sobre todo de "internal_link_targets" (sus servicios y páginas REALES). Deduce el sector
+y los servicios de esas páginas. NUNCA inventes servicios que la empresa no ofrezca. SIEMPRE debes proponer un
+artículo (nunca respondas vacío).
 
 Primero DECIDE el tipo de contenido ("content_type"):
 - "post": artículo informativo de blog (guías, "qué es", "cómo", tendencias). Ideal para
@@ -256,11 +271,14 @@ def run_for_client(client_id, dry_run=False):
     print(f"\n{'='*60}\n  Redactor · {client['name']} ({client['domain']}){'  [DRY-RUN]' if dry_run else ''}\n{'='*60}")
 
     opps = gather_opportunities(client_id)
-    if not opps['striking_keywords'] and not opps['competitor_topics']:
-        print("  ⚠ Sin oportunidades de contenido (faltan datos de Search Console/Espía).")
+    # Necesitamos ALGO de lo que tirar: oportunidades, o al menos keywords semilla o páginas reales
+    if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('seed_keywords') or opps.get('internal_link_targets')):
+        print("  ⚠ Sin datos suficientes (ni keywords ni páginas). Ejecuta antes Performance/Auditor para este cliente.")
         return
+    fallback = not opps['striking_keywords'] and not opps['competitor_topics']
     print(f"  {len(opps['striking_keywords'])} keywords striking · {len(opps['competitor_topics'])} temas de competidores · "
-          f"{len(opps['already_covered'])} ya cubiertos · {len(opps.get('internal_link_targets', []))} destinos de enlace interno")
+          f"{len(opps.get('seed_keywords', []))} keywords semilla · {len(opps.get('internal_link_targets', []))} páginas"
+          + ("  [modo fallback: sin oportunidades fuertes, escribe a partir de servicios/keywords]" if fallback else ""))
 
     for i in range(POSTS_PER_RUN):
         art = generate_article(client, opps)
