@@ -234,6 +234,17 @@ Tareas estratégicas (revisión humana):
 - consolidate_pages: fusionar páginas que canibalizan
 - redirect_obsolete: redirigir páginas obsoletas
 
+# FALSOS POSITIVOS — NO generes tareas para esto
+
+- Enlaces con href="#" o vacíos de BANNERS DE COOKIES / CONSENTIMIENTO (Complianz, Cookie Notice,
+  IAB TCF): textos como "Administrar opciones", "Gestionar los servicios", "Gestionar proveedores",
+  "Ver preferencias", "Aceptar/Rechazar cookies". Aparecen en TODAS las páginas y son controles de
+  interfaz gestionados por JavaScript — NO son enlaces internos rotos ni un problema de SEO. Ignóralos.
+- Enlaces href="#" de menús desplegables, acordeones, pestañas o botones de UI (los maneja JS). Ignóralos.
+- Placeholders de plantilla sin renderizar: {title}, {vendor_count}, {{mustache}}, %s… son de plugins/temas,
+  no contenido real. Ignóralos.
+- NO inventes recuentos de enlaces rotos/href="#" ni cifras que no estén respaldadas por los datos del dossier.
+
 # Formato de respuesta
 
 DEBES responder EXCLUSIVAMENTE con un JSON válido.
