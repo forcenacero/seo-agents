@@ -429,17 +429,25 @@ def save_tasks(client_id, result):
         category = task.get('category', 'optimization')
         priority = task.get('priority', 'medium')
 
-        # Anti-duplicados: si ya existe una tarea técnica ABIERTA del mismo tipo, no crear otra
-        if task_type in LOW_RISK_TYPES:
-            existing = db.query_one("""
-                SELECT id FROM tasks
-                WHERE client_id = ? AND task_type = ?
-                  AND status IN ('pending_review', 'approved', 'in_progress')
-                LIMIT 1
-            """, [client_id, task_type])
-            if existing:
-                print(f"    ⏭  '{task_type}' ya tiene una tarea abierta; se omite para no duplicar")
-                continue
+        # Anti-duplicados (TODOS los tipos): no crear si ya hay una tarea ABIERTA equivalente.
+        # Equivalente = mismo tipo y (misma target_url, o misma related_keyword, o título muy parecido).
+        title_v = (task.get('title', '') or '')[:500]
+        target_v = task.get('target_url')
+        keyword_v = task.get('related_keyword')
+        OPEN = "('pending_review', 'approved', 'in_progress')"
+        dup = None
+        if target_v:
+            dup = db.query_one(f"SELECT id FROM tasks WHERE client_id=? AND task_type=? AND target_url=? AND status IN {OPEN} LIMIT 1", [client_id, task_type, target_v])
+        if not dup and keyword_v:
+            dup = db.query_one(f"SELECT id FROM tasks WHERE client_id=? AND task_type=? AND related_keyword=? AND status IN {OPEN} LIMIT 1", [client_id, task_type, keyword_v])
+        if not dup and title_v:
+            dup = db.query_one(f"SELECT id FROM tasks WHERE client_id=? AND task_type=? AND LEFT(title,45)=? AND status IN {OPEN} LIMIT 1", [client_id, task_type, title_v[:45]])
+        # Los técnicos, además: una sola tarea abierta por tipo (agrupan muchas páginas)
+        if not dup and task_type in LOW_RISK_TYPES:
+            dup = db.query_one(f"SELECT id FROM tasks WHERE client_id=? AND task_type=? AND status IN {OPEN} LIMIT 1", [client_id, task_type])
+        if dup:
+            print(f"    ⏭  '{task_type}' duplicada (ya hay una abierta equivalente); se omite")
+            continue
 
         is_low_risk = task_type in LOW_RISK_TYPES and category == 'technical'
         status = 'approved' if is_low_risk else 'pending_review'
