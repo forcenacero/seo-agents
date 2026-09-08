@@ -286,8 +286,12 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=
     # En TranslatePress las traducciones NO son posts separados: aplicar meta ahí machacaría el post
     # del idioma por defecto. Las traducciones se cubren vía TranslatePress + schema por idioma del plugin.
     _lc = "en|fr|ca|de|it|pt|eu|gl|nl"
+    # OJO: el punto va como [.] (clase de carácter), NO como \. — la barra invertida se pierde
+    # al pasar por el proxy JSON y el regex quedaría '://(...).' con . comodín, que hace match con
+    # dominios que empiezan por un código de idioma (delmas→"de", italifters→"it") y saltaría TODAS
+    # sus URLs. Con [.] el punto es literal y robusto al escapado.
     lang_skip = (f"AND tau.page_url NOT REGEXP '://[^/]+/({_lc})(/|$)' "
-                 f"AND tau.page_url NOT REGEXP '://({_lc})\\.'")
+                 f"AND tau.page_url NOT REGEXP '://({_lc})[.]'")
 
     base_where = """t.client_id = ?
           AND t.status = 'approved'
