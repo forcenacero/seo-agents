@@ -76,6 +76,25 @@ FIELD_BY_TYPE = {
 }
 AI_TYPES = set(FIELD_BY_TYPE.keys())
 
+# Idiomas de traducción soportados (prefijo de URL) y su nombre para el prompt.
+LANG_NAMES = {
+    'es': 'español', 'en': 'inglés', 'fr': 'francés', 'ca': 'catalán', 'de': 'alemán',
+    'it': 'italiano', 'pt': 'portugués', 'eu': 'euskera', 'gl': 'gallego', 'nl': 'neerlandés',
+}
+TRANSLATED_LANGS = {'en', 'fr', 'ca', 'de', 'it', 'pt', 'eu', 'gl', 'nl'}
+
+
+def url_lang(url, default='es'):
+    """Idioma de una URL por su prefijo (/en/…, subdominio en.host); si no lo hay, el por defecto."""
+    p = urlparse(url)
+    m = re.match(r'^/([a-z]{2})(?:/|$)', p.path or '/')
+    if m and m.group(1) in TRANSLATED_LANGS:
+        return m.group(1)
+    host = (p.netloc or '').split('.')[0].lower()
+    if host in TRANSLATED_LANGS:
+        return host
+    return default
+
 # Servicio GSC cacheado (se crea una vez por ejecución)
 _GSC = {'service': None, 'tried': False}
 
@@ -164,8 +183,10 @@ def generate_ai_values(client, batch):
     for item in batch:
         needs = item['needs']
         ctx = item['ctx']
+        lang = item.get('lang', 'es')
         page = {
             'url': item['url'],
+            'lang_name': LANG_NAMES.get(lang, 'español'),
             'needs': sorted(needs),
             'current_title': ctx.get('title', ''),
             'current_h1': ctx.get('h1', ''),
@@ -179,8 +200,12 @@ def generate_ai_values(client, batch):
             page['images_without_alt'] = ctx.get('images_without_alt', [])
         pages.append(page)
 
-    system_prompt = f"""Eres un consultor SEO técnico senior para {client['name']} (web B2B en español).
+    system_prompt = f"""Eres un consultor SEO técnico senior para {client['name']} (web B2B multiidioma).
 Tono de la marca: {client.get('tone_of_voice') or 'profesional, claro, orientado a negocio'}.
+
+IMPORTANTE — IDIOMA: cada página trae "lang_name" con SU idioma. Redacta TODOS los campos de esa
+página EN ESE IDIOMA (una página en "inglés" → meta/título en inglés; en "catalán" → en catalán…).
+No traduzcas marcas ni nombres propios.
 
 Cada página trae "search_console_queries": BÚSQUEDAS REALES de Google Search Console por las que
 ya recibe impresiones (clics, impresiones, posición). PRIORÍZALAS, sobre todo las de más
@@ -189,7 +214,7 @@ impresiones y posición 5-20. Si no hay queries, usa el contenido. No inventes s
 Para cada página genera SOLO los campos listados en su "needs":
 - "meta"  -> meta_description: 120-155 caracteres, integra las búsquedas reales, con CTA suave.
 - "title" -> seo_title: 35-60 caracteres, empieza por la búsqueda real más relevante si encaja.
-             NO incluyas el nombre de la marca (Yoast lo añade con la plantilla).
+             NO incluyas el nombre de la marca (el plugin SEO —Yoast o Rank Math— lo añade con la plantilla).
 - "h1"    -> h1: un ÚNICO H1 claro (20-70 car) con la búsqueda principal. (current_h1_count indica
              cuántos H1 hay ahora; si hay varios, propón el definitivo).
 - "schema"-> schema: {{ "type": "<Article|Product|Service|LocalBusiness|FAQPage|BreadcrumbList|WebPage>",
@@ -201,7 +226,7 @@ Responde SOLO con JSON válido:
    "schema": {{...}}, "image_alts": [...] }} ] }}
 Reglas:
 - En cada objeto incluye SOLO los campos pedidos en "needs" (omite el resto).
-- Respeta longitudes EXACTAS. Español natural, sin relleno genérico.
+- Respeta longitudes EXACTAS. Redacta en el idioma de "lang_name" de cada página, natural y sin relleno genérico.
 """
     user_prompt = "Páginas:\n" + json.dumps(pages, ensure_ascii=False, indent=2)
 
@@ -282,21 +307,24 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=
         type_params = list(only_types)
         print(f"  Filtro de tipos: {', '.join(only_types)}")
 
-    # Multiidioma: NO optimizar URLs de traducción (subcarpeta /en/ /fr/… NI subdominio en.host).
-    # En TranslatePress las traducciones NO son posts separados: aplicar meta ahí machacaría el post
-    # del idioma por defecto. Las traducciones se cubren vía TranslatePress + schema por idioma del plugin.
+    # Multiidioma: en URLs traducidas (subcarpeta /en/ /fr/… o subdominio en.host) SÍ generamos,
+    # pero SOLO meta/title — el plugin (v3.9+) sabe enrutar esos dos al diccionario de TranslatePress
+    # del idioma correcto SIN tocar el post del idioma por defecto. El resto de tipos
+    # (canonical/schema/h1/alt) todavía NO son por idioma → se saltan en las traducidas.
     _lc = "en|fr|ca|de|it|pt|eu|gl|nl"
     # OJO: el punto va como [.] (clase de carácter), NO como \. — la barra invertida se pierde
     # al pasar por el proxy JSON y el regex quedaría '://(...).' con . comodín, que hace match con
     # dominios que empiezan por un código de idioma (delmas→"de", italifters→"it") y saltaría TODAS
     # sus URLs. Con [.] el punto es literal y robusto al escapado.
-    lang_skip = (f"AND tau.page_url NOT REGEXP '://[^/]+/({_lc})(/|$)' "
-                 f"AND tau.page_url NOT REGEXP '://({_lc})[.]'")
+    lang_url_regex = (f"(tau.page_url REGEXP '://[^/]+/({_lc})(/|$)' "
+                      f"OR tau.page_url REGEXP '://({_lc})[.]')")
+    lang_gate = (f"AND ( NOT {lang_url_regex} "
+                 f"OR t.task_type IN ('add_meta_description', 'fix_title_length') )")
 
     base_where = """t.client_id = ?
           AND t.status = 'approved'
           AND tau.url_status = 'pending'
-          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')""" + type_sql + "\n          " + lang_skip
+          AND (tau.suggested_value IS NULL OR tau.suggested_value = '')""" + type_sql + "\n          " + lang_gate
 
     # Paso 1: URLs ÚNICAS pendientes (el límite cuenta páginas, no filas duplicadas)
     url_rows = db.query(f"""
@@ -361,7 +389,7 @@ def run_for_client(client_id, dry_run=False, limit=MAX_URLS_PER_RUN, only_types=
             time.sleep(0.2)
         tag = ('GSC:' + real_queries[0]['query']) if real_queries else 'sin GSC'
         print(f"    · {url[:42]} [{','.join(sorted(needs))}] ({tag})")
-        batch.append({'url': url, 'needs': needs, 'ctx': ctx,
+        batch.append({'url': url, 'needs': needs, 'ctx': ctx, 'lang': url_lang(url),
                       'related_keyword': ai_pending[url]['related_keyword'], 'real_queries': real_queries})
         if len(batch) >= GEMINI_BATCH or i == len(urls) - 1:
             if batch:
