@@ -1,0 +1,43 @@
+name: Google Ads Agent
+
+on:
+  schedule:
+    # Día 2 de cada mes a las 08:00 UTC (tras cerrar el mes).
+    - cron: '0 8 2 * *'
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: 'ID del cliente (vacío = todos los activos con cuenta Ads)'
+        required: false
+        type: string
+
+jobs:
+  run-ads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Google Ads agent
+        env:
+          DB_API_URL: ${{ secrets.DB_API_URL }}
+          DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
+          GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET: ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN: ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+          GOOGLE_ADS_USE_PROTO_PLUS: "True"
+        run: |
+          if [ -n "${{ github.event.inputs.client_id }}" ]; then
+            python agents/ads.py "${{ github.event.inputs.client_id }}"
+          else
+            python agents/ads.py
+          fi
