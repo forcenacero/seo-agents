@@ -129,6 +129,33 @@ def run_for_client(client, months=MONTHS):
         """, [client['id'], month, camp_id, c['name'][:255], c['status'], round(c['cost'], 2), int(c['clicks']),
               int(c['impressions']), round(c['conversions'], 2), round(c['conv_value'], 2)])
 
+    # Conversiones por tipo de acción (teléfono, formulario…) por mes
+    try:
+        cquery = f"""
+            SELECT segments.conversion_action_name, segments.conversion_action_category, segments.month,
+                   metrics.conversions, metrics.conversions_value
+            FROM customer
+            WHERE segments.date BETWEEN '{start}' AND '{end}'
+        """
+        conv_by = {}   # (month, name) -> {cat, conv, val}
+        for batch in ga.search_stream(customer_id=cid, query=cquery):
+            for row in batch.results:
+                month = str(row.segments.month)[:7]
+                name = row.segments.conversion_action_name or '(sin nombre)'
+                cat = getattr(row.segments.conversion_action_category, 'name', str(row.segments.conversion_action_category))
+                k = (month, name)
+                e = conv_by.setdefault(k, {'cat': cat, 'conv': 0, 'val': 0})
+                e['conv'] += row.metrics.conversions; e['val'] += row.metrics.conversions_value
+        for (month, name), e in conv_by.items():
+            db.execute("""
+                INSERT INTO ads_conversions_monthly (client_id, month, action_name, category, conversions, conv_value)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions), conv_value=VALUES(conv_value)
+            """, [client['id'], month, name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
+        print(f"  · conversiones por tipo: {len(conv_by)} filas")
+    except Exception as e:
+        print(f"  ⚠ conversiones por tipo no disponibles: {e}")
+
     last = max(by_month) if by_month else None
     lm = by_month.get(last, {})
     print(f"  → {len(by_month)} meses · {len(by_camp)} campañas · último mes {last}: "
