@@ -1,0 +1,39 @@
+name: AI Presence Agent
+
+on:
+  schedule:
+    # Día 1 de cada mes a las 07:00 UTC. Mide si la IA (Gemini + grounding) cita al cliente.
+    - cron: '0 7 1 * *'
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: 'ID del cliente (vacío = todos los activos)'
+        required: false
+        type: string
+
+jobs:
+  run-ai-presence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run AI Presence agent
+        env:
+          DB_API_URL: ${{ secrets.DB_API_URL }}
+          DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_GROUNDING_MODEL: 'gemini-3.6-flash'
+        run: |
+          if [ -n "${{ github.event.inputs.client_id }}" ]; then
+            python agents/ai_presence.py "${{ github.event.inputs.client_id }}"
+          else
+            python agents/ai_presence.py
+          fi
