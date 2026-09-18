@@ -129,30 +129,45 @@ def run_for_client(client, months=MONTHS):
         """, [client['id'], month, camp_id, c['name'][:255], c['status'], round(c['cost'], 2), int(c['clicks']),
               int(c['impressions']), round(c['conversions'], 2), round(c['conv_value'], 2)])
 
-    # Conversiones por tipo de acción (teléfono, formulario…) por mes
+    # Conversiones por tipo de acción (teléfono, formulario…) por mes, SEGMENTADAS por campaña.
+    # Con una sola consulta a nivel campaña obtenemos:
+    #   - el total por (mes, acción)            -> ads_conversions_monthly   (agregando campañas)
+    #   - el detalle por (mes, campaña, acción) -> ads_conv_campaign_monthly (para el desglose por campaña)
     try:
         cquery = f"""
-            SELECT segments.conversion_action_name, segments.conversion_action_category, segments.month,
+            SELECT campaign.id, campaign.name,
+                   segments.conversion_action_name, segments.conversion_action_category, segments.month,
                    metrics.conversions, metrics.conversions_value
-            FROM customer
+            FROM campaign
             WHERE segments.date BETWEEN '{start}' AND '{end}'
         """
-        conv_by = {}   # (month, name) -> {cat, conv, val}
+        conv_by = {}       # (month, name) -> {cat, conv, val}
+        conv_camp = {}     # (month, camp_id, name) -> {camp_name, cat, conv, val}
         for batch in ga.search_stream(customer_id=cid, query=cquery):
             for row in batch.results:
                 month = str(row.segments.month)[:7]
                 name = row.segments.conversion_action_name or '(sin nombre)'
                 cat = getattr(row.segments.conversion_action_category, 'name', str(row.segments.conversion_action_category))
-                k = (month, name)
-                e = conv_by.setdefault(k, {'cat': cat, 'conv': 0, 'val': 0})
-                e['conv'] += row.metrics.conversions; e['val'] += row.metrics.conversions_value
+                conv = row.metrics.conversions; val = row.metrics.conversions_value
+                e = conv_by.setdefault((month, name), {'cat': cat, 'conv': 0, 'val': 0})
+                e['conv'] += conv; e['val'] += val
+                camp_id = str(row.campaign.id)
+                ec = conv_camp.setdefault((month, camp_id, name), {'camp_name': row.campaign.name, 'cat': cat, 'conv': 0, 'val': 0})
+                ec['conv'] += conv; ec['val'] += val
         for (month, name), e in conv_by.items():
             db.execute("""
                 INSERT INTO ads_conversions_monthly (client_id, month, action_name, category, conversions, conv_value)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions), conv_value=VALUES(conv_value)
             """, [client['id'], month, name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
-        print(f"  · conversiones por tipo: {len(conv_by)} filas")
+        for (month, camp_id, name), e in conv_camp.items():
+            db.execute("""
+                INSERT INTO ads_conv_campaign_monthly (client_id, month, campaign_id, campaign_name, action_name, category, conversions, conv_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE campaign_name=VALUES(campaign_name), category=VALUES(category),
+                    conversions=VALUES(conversions), conv_value=VALUES(conv_value)
+            """, [client['id'], month, camp_id, e['camp_name'][:255], name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
+        print(f"  · conversiones por tipo: {len(conv_by)} · por campaña: {len(conv_camp)} filas")
     except Exception as e:
         print(f"  ⚠ conversiones por tipo no disponibles: {e}")
 
