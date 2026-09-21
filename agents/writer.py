@@ -41,7 +41,9 @@ db = DBClient()
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
+# El Redactor puede usar un modelo propio (WRITER_MODEL) para contenido más largo/rico;
+# por defecto respeta GEMINI_MODEL. Sugerido para artículos extensos: gemini-flash-latest.
+MODEL_NAME = os.getenv('WRITER_MODEL') or os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
 POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '1'))  # 1 post/semana por cliente
 PUBLISH_WEEKDAY = 1  # 0=lunes ... el hueco semanal cae en martes
@@ -159,21 +161,34 @@ Primero DECIDE el tipo de contenido ("content_type"):
   ofrece la empresa, con beneficios, proceso, aplicaciones y CTA claro). Ideal cuando la
   oportunidad es comercial/transaccional o el competidor tiene una landing de ese servicio.
 
-Escribe un contenido COMPLETO listo para publicar (800-1400 palabras) en HTML semántico:
-- Solo el cuerpo: <h2>, <h3>, <p>, <ul>/<li>, <strong>. SIN <h1> (el título va aparte). SIN <html>/<body>.
-- Si es "landing": estructura orientada a venta (introducción con propuesta de valor,
-  beneficios, proceso/cómo trabajamos, aplicaciones/sectores, y un cierre con CTA).
-- Si es "post": estructura informativa y útil.
-- Específico del sector. Nada de relleno genérico ni inventar datos/cifras.
-- Integra de forma natural la keyword principal y variantes reales.
-- ENLAZADO INTERNO OBLIGATORIO: incluye 3-5 enlaces internos en el contenido usando
+Escribe un contenido EXTENSO, EXHAUSTIVO y bien estructurado, listo para publicar
+(OBJETIVO: 1300-1900 palabras; nunca menos de 1200) en HTML semántico:
+- Solo el cuerpo: <h2>, <h3>, <p>, <ul>/<ol>/<li>, <strong>, y <table> cuando aporte
+  (comparativas, tipos, ventajas/inconvenientes, criterios). SIN <h1> (el título va aparte). SIN <html>/<body>.
+- EXTENSIÓN Y PROFUNDIDAD: entre 6 y 9 secciones <h2>, varias con subsecciones <h3>.
+  Párrafos DESARROLLADOS (3-5 frases cada uno, no frases sueltas). Cubre el tema a fondo:
+  contexto/por qué importa, definiciones, tipos o variantes, proceso o cómo hacerlo paso a paso,
+  beneficios, errores comunes a evitar, criterios de decisión y casos/aplicaciones reales del sector.
+  Prohibido el relleno genérico y repetir la misma idea con otras palabras.
+- INTRODUCCIÓN de 2-3 párrafos que enganche, plantee el problema y adelante qué va a aprender el lector.
+- Incluye AL MENOS UNA lista (<ul> u <ol>) y, cuando sea pertinente, AL MENOS UNA <table>
+  (p.ej. comparativa de opciones, tipos, o ventajas frente a inconvenientes).
+- COBERTURA SEMÁNTICA SEO: integra de forma natural la keyword principal, sus variantes reales
+  y términos/entidades relacionados del sector (amplía el campo semántico), sin sobreoptimizar.
+- Detalle concreto y específico del sector (procesos, ejemplos, criterios). NO inventes datos,
+  cifras, estudios ni normativas; si citas una cifra debe ser de conocimiento general y verificable.
+- Si es "landing": misma extensión, estructura orientada a venta (propuesta de valor, beneficios,
+  proceso/cómo trabajamos, aplicaciones/sectores, diferenciación/garantías y cierre con CTA claro).
+- Si es "post": guía informativa completa que resuelva POR ENTERO la intención de búsqueda.
+- ENLAZADO INTERNO OBLIGATORIO: incluye 4-6 enlaces internos usando
   <a href="URL">texto ancla descriptivo</a> hacia las páginas más relacionadas de
-  "internal_link_targets". Usa EXCLUSIVAMENTE esas URLs reales (nunca inventes rutas).
-  El texto ancla debe ser natural y describir el destino (nada de "haz clic aquí").
-  Reparte los enlaces en distintas secciones; no enlaces la misma URL dos veces.
-- FAQ OBLIGATORIA (mejora la visibilidad en IA): termina con una sección
-  <h2>Preguntas frecuentes</h2> y 3-5 preguntas reales del sector, cada una con su
-  <h3>¿pregunta?</h3> seguida de un <p> con respuesta directa y concisa (2-4 frases).
+  "internal_link_targets". Usa EXCLUSIVAMENTE esas URLs reales (nunca inventes rutas),
+  con ancla natural que describa el destino (nada de "haz clic aquí"), repartidos en
+  distintas secciones y sin repetir la misma URL.
+- CONCLUSIÓN final (1-2 párrafos) que resuma y cierre con un CTA hacia un servicio/página real.
+- FAQ OBLIGATORIA (mejora la visibilidad en IA): como última sección, un
+  <h2>Preguntas frecuentes</h2> con 4-6 preguntas reales del sector, cada una con su
+  <h3>¿pregunta?</h3> seguida de un <p> con respuesta directa y útil (2-4 frases).
   Las mismas preguntas/respuestas deben ir también en el schema FAQPage.
 
 Responde SOLO con JSON válido:
@@ -212,7 +227,7 @@ Responde SOLO con JSON válido:
     for attempt in range(max_attempts):
         raw = generate_with_retry(
             model, user_prompt,
-            generation_config={'temperature': 0.6, 'max_output_tokens': 8000, 'response_mime_type': 'application/json'}
+            generation_config={'temperature': 0.65, 'max_output_tokens': 16000, 'response_mime_type': 'application/json'}
         )
         text = raw.strip()
         if text.startswith('```'):

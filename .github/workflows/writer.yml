@@ -36,6 +36,8 @@ jobs:
           DB_API_URL: ${{ secrets.DB_API_URL }}
           DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Modelo del Redactor: flash-latest genera artículos más largos y completos (1300-1900+ palabras).
+          WRITER_MODEL: gemini-flash-latest
         run: |
           if [ -n "${{ github.event.inputs.client_id }}" ]; then
             python agents/writer.py "${{ github.event.inputs.client_id }}"
