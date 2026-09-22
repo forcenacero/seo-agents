@@ -2,8 +2,8 @@ name: Google Ads Agent
 
 on:
   schedule:
-    # Día 2 de cada mes a las 08:00 UTC (tras cerrar el mes).
-    - cron: '0 8 2 * *'
+    # Diario a las 07:00 UTC → las conversiones del mes en curso se actualizan cada día.
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       client_id:
