@@ -15,11 +15,25 @@ Flujo por producto:
 
 Por defecto es DRY-RUN: imprime antes/después y NO escribe nada.
 
+Cubre tres tipos de recurso (--tipo):
+  products    fichas de producto          (title en meta_title)
+  categories  categorías del catálogo     (title en meta_title)
+  cms         páginas CMS / landings      (title en head_seo_title)  ← OJO
+
+  ⚠ En las páginas CMS de PrestaShop hay DOS campos de título y no son
+    intercambiables:
+      head_seo_title → el <title> de la pestaña, lo que se ve en Google
+      meta_title     → el ENCABEZADO VISIBLE de la página y el nombre del
+                       breadcrumb (incluido el BreadcrumbList JSON-LD)
+    Escribir el título SEO en meta_title lo saca impreso en mitad de la página.
+    Verificado en italiftersiberica.com el 23/09/2026.
+
 Uso:
-  python agents/prestashop.py                 # dry-run, primeros PS_MAX productos
-  python agents/prestashop.py --apply         # aplica de verdad
-  python agents/prestashop.py --limit 5       # nº de productos
-  python agents/prestashop.py --ids 21,22     # productos concretos
+  python agents/prestashop.py                      # dry-run, productos
+  python agents/prestashop.py --tipo cms           # dry-run, páginas CMS
+  python agents/prestashop.py --tipo categories --apply
+  python agents/prestashop.py --limit 5            # nº de elementos
+  python agents/prestashop.py --ids 21,22          # elementos concretos
 
 Env:
   WORKER_URL      (def. https://seo-agents-proxy.david-0bd.workers.dev)
@@ -90,9 +104,32 @@ def ps_put(path, xml_body):
     return _req('PUT', path, body=xml_body.encode('utf-8'))
 
 
-def product_ids(limit):
-    xml = ps_get(f"products?limit={limit}")
-    return re.findall(r'<product id="(\d+)"', xml)
+def resource_ids(rec, limit):
+    xml = ps_get(f"{rec['ruta']}?limit={limit}")
+    return re.findall(rf'<{rec["nodo"]} id="(\d+)"', xml)
+
+
+# ─────────────────────────── Recursos soportados ───────────────────────────
+# Cada recurso de PrestaShop tiene su nodo raíz, su campo de título y sus campos
+# calculados que el PUT rechaza. Ver el aviso del docstring sobre head_seo_title.
+RECURSOS = {
+    'products': {
+        'ruta': 'products', 'nodo': 'product', 'etiqueta': 'productos',
+        'campo_titulo': 'meta_title', 'campo_nombre': 'name', 'lim_titulo': 70,
+        'readonly': ['manufacturer_name', 'quantity'],
+    },
+    'categories': {
+        'ruta': 'categories', 'nodo': 'category', 'etiqueta': 'categorías',
+        'campo_titulo': 'meta_title', 'campo_nombre': 'name', 'lim_titulo': 60,
+        'readonly': ['level_depth', 'nb_products_recursive', 'date_add', 'date_upd', 'position'],
+    },
+    'cms': {
+        'ruta': 'content_management_system', 'nodo': 'content', 'etiqueta': 'páginas CMS',
+        # head_seo_title es el <title>; meta_title es el encabezado visible.
+        'campo_titulo': 'head_seo_title', 'campo_nombre': 'meta_title', 'lim_titulo': 60,
+        'readonly': ['position'],
+    },
+}
 
 
 # ─────────────────────────── Parseo / edición de XML ───────────────────────────
@@ -114,19 +151,19 @@ def set_lang_cdata(xml, tag, new_value, lang=DEFAULT_LANG):
 
 # Campos de solo-lectura que PrestaShop rechaza en un PUT (hay que quitarlos del XML de GET).
 # Ojo: algunos nodos llevan atributos (p. ej. <manufacturer_name notFilterable="true">).
-READONLY_NODES = ['manufacturer_name', 'quantity']
+READONLY_NODES = ['manufacturer_name', 'quantity']   # compatibilidad
 
 
-def strip_readonly(xml):
-    for tag in READONLY_NODES:
+def strip_readonly(xml, nodos=None):
+    for tag in (nodos if nodos is not None else READONLY_NODES):
         xml = re.sub(rf'\s*<{tag}(\s[^>]*)?>.*?</{tag}>', '', xml, flags=re.S)
         xml = re.sub(rf'\s*<{tag}(\s[^>]*)?/>', '', xml)
     return xml
 
 
 # ─────────────────────────── Generación de meta ───────────────────────────
-def needs_meta(mt, md):
-    return (not mt or len(mt) < 15 or len(mt) > 70 or
+def needs_meta(mt, md, lim_titulo=70):
+    return (not mt or len(mt) < 15 or len(mt) > lim_titulo or
             not md or len(md) < 70 or len(md) > 160)
 
 
@@ -150,15 +187,21 @@ def gen_meta(model, name, mt, md):
 
 
 # ─────────────────────────── Main ───────────────────────────
-def run(ids=None, limit=PS_MAX, apply=False):
+def run(ids=None, limit=PS_MAX, apply=False, tipo='products'):
     if not PS_TOKEN:
         print('ERROR: falta PS_PROXY_TOKEN (token del Worker).'); sys.exit(1)
     if not GEMINI_API_KEY:
         print('ERROR: falta GEMINI_API_KEY.'); sys.exit(1)
 
+    rec = RECURSOS.get(tipo)
+    if rec is None:
+        print(f"ERROR: tipo '{tipo}' desconocido. Usa: {', '.join(RECURSOS)}"); sys.exit(1)
+    campo_t = rec['campo_titulo']
+
     if ids is None:
-        ids = product_ids(limit)
-    print(f"{'='*74}\n  PrestaShop SEO · {BRAND} · {len(ids)} productos"
+        ids = resource_ids(rec, limit)
+    print(f"{'='*74}\n  PrestaShop SEO · {BRAND} · {len(ids)} {rec['etiqueta']}"
+          f" · title en <{campo_t}>"
           f"{'  [APLICAR]' if apply else '  [DRY-RUN]'}\n{'='*74}")
 
     model = genai.GenerativeModel(
@@ -168,14 +211,14 @@ def run(ids=None, limit=PS_MAX, apply=False):
     stats = {'revisados': 0, 'generados': 0, 'aplicados': 0, 'saltados_ok': 0, 'errores': 0}
 
     for pid in ids:
-        xml = ps_get(f"products/{pid}?display=full")
-        name = lang_cdata(xml, 'name')
+        xml = ps_get(f"{rec['ruta']}/{pid}?display=full")
+        name = lang_cdata(xml, rec['campo_nombre'])
         if not name:
             print(f"  #{pid}  ⚠ sin datos (¿WAF? reintentar)"); stats['errores'] += 1; continue
-        mt = lang_cdata(xml, 'meta_title')
+        mt = lang_cdata(xml, campo_t)
         md = lang_cdata(xml, 'meta_description')
         stats['revisados'] += 1
-        if not needs_meta(mt, md):
+        if not needs_meta(mt, md, rec['lim_titulo']):
             stats['saltados_ok'] += 1
             print(f"  #{pid}  ✓ meta ya correcta · {name[:45]}")
             continue
@@ -192,12 +235,12 @@ def run(ids=None, limit=PS_MAX, apply=False):
         print(f"     DESC  {len(md)}→{len(nd)} | {(md or '(vacío)')[:80]}\n                → {nd}")
 
         if apply:
-            new_xml = strip_readonly(xml)
-            new_xml, n1 = set_lang_cdata(new_xml, 'meta_title', nt)
+            new_xml = strip_readonly(xml, rec['readonly'])
+            new_xml, n1 = set_lang_cdata(new_xml, campo_t, nt)
             new_xml, n2 = set_lang_cdata(new_xml, 'meta_description', nd)
             if n1 == 0 or n2 == 0:
                 print("     ✗ no se pudo localizar el nodo de meta para reemplazar"); stats['errores'] += 1; continue
-            code, resp = ps_put(f"products/{pid}", new_xml)
+            code, resp = ps_put(f"{rec['ruta']}/{pid}", new_xml)
             if code in (200, 201):
                 stats['aplicados'] += 1
                 print("     ✅ aplicado en PrestaShop")
@@ -216,13 +259,17 @@ def main():
     apply = '--apply' in args
     limit = PS_MAX
     ids = None
+    tipo = 'products'
+    if '--tipo' in args:
+        try: tipo = args[args.index('--tipo') + 1].strip()
+        except Exception: pass
     if '--limit' in args:
         try: limit = int(args[args.index('--limit') + 1])
         except Exception: pass
     if '--ids' in args:
         try: ids = [x.strip() for x in args[args.index('--ids') + 1].split(',') if x.strip()]
         except Exception: pass
-    run(ids=ids, limit=limit, apply=apply)
+    run(ids=ids, limit=limit, apply=apply, tipo=tipo)
 
 
 if __name__ == '__main__':
