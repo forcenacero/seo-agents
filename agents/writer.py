@@ -199,6 +199,7 @@ Responde SOLO con JSON válido:
   "focus_keyword": "keyword principal",
   "slug": "slug-url-corto",
   "meta_description": "120-155 caracteres con la keyword y un CTA",
+  "category": "Categoría temática del blog (1-3 palabras) acorde al tema y al sector del cliente; ej. 'Logística', 'Guías', 'Noticias', 'Casos de éxito', 'Normativa'",
   "content_html": "<h2>...</h2><p>...</p>...",
   "schema": {{
     "@context": "https://schema.org",
@@ -262,8 +263,9 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
     db.execute("""
         INSERT INTO content_drafts
             (client_id, title, content_type, target_keyword, draft_content,
-             meta_description, image_hook, slug, seo_schema, status, scheduled_for, generated_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, 'writer')
+             meta_description, image_hook, slug, seo_schema, status, scheduled_for, generated_by,
+             wp_category_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, 'writer', ?)
     """, [
         client_id,
         (art.get('title') or '')[:500],
@@ -275,6 +277,7 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
         slug[:200],
         schema_json,
         scheduled_for.isoformat(),
+        (art.get('category') or '')[:150] or None,
     ])
 
 
