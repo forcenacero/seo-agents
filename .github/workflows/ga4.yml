@@ -1,0 +1,38 @@
+name: GA4 Analytics Agent
+
+on:
+  schedule:
+    # Diario a las 07:15 UTC → las sesiones del mes en curso se actualizan cada día.
+    - cron: '15 7 * * *'
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: 'ID del cliente (vacío = todos los activos con propiedad GA4)'
+        required: false
+        type: string
+
+jobs:
+  run-ga4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run GA4 agent
+        env:
+          DB_API_URL: ${{ secrets.DB_API_URL }}
+          DB_API_TOKEN: ${{ secrets.DB_API_TOKEN }}
+          GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "${{ github.event.inputs.client_id }}" ]; then
+            python agents/ga4.py "${{ github.event.inputs.client_id }}"
+          else
+            python agents/ga4.py
+          fi
