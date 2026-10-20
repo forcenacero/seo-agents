@@ -125,7 +125,31 @@ def gather_opportunities(client_id, brand=frozenset()):
         SELECT topic, opportunity_score, reasoning
         FROM competitor_winning_topics
         WHERE client_id = ?
-        ORDER BY opportunity_score DESC LIMIT 10
+        ORDER BY opportunity_score DESC LIMIT 12
+    """, [client_id])
+
+    # ESPÍA — keyword gaps: keywords por las que un competidor rankea y nosotros mal o nada.
+    # Es la señal MÁS fuerte de demanda real no cubierta. Trae la URL del competidor que la
+    # gana, su nº de palabras y si usa schema → sirve para superar su cobertura.
+    kw_gaps = db.query("""
+        SELECT keyword, client_position, competitor_url, competitor_word_count,
+               competitor_has_schema, competitor_h1, recommendation
+        FROM competitor_keyword_gaps
+        WHERE client_id = ?
+        ORDER BY client_position DESC, competitor_word_count DESC
+        LIMIT 20
+    """, [client_id])
+
+    # ESPÍA — pares de páginas: dónde una página de competidor supera a la nuestra equivalente
+    # (hueco de contenido), con análisis del gap y recomendación.
+    comp_pairs = db.query("""
+        SELECT competitor_url, competitor_title, competitor_h1,
+               competitor_word_count, client_word_count, gap_analysis, recommendations
+        FROM competitor_page_pairs
+        WHERE client_id = ?
+          AND (COALESCE(gap_analysis,'') <> '' OR COALESCE(recommendations,'') <> '')
+        ORDER BY similarity_score DESC
+        LIMIT 8
     """, [client_id])
 
     # Contenido ya propuesto (para no repetir), últimos 120 días
@@ -163,6 +187,7 @@ def gather_opportunities(client_id, brand=frozenset()):
 
     striking = [s for s in striking if not is_brand_query(s['keyword'], brand)][:15]
     seed = [s for s in seed if not is_brand_query(s['keyword'], brand)][:20]
+    kw_gaps = [g for g in kw_gaps if not is_brand_query(g['keyword'], brand)][:15]
 
     # Señales de GOOGLE ADS: acciones de conversión y campañas que ya convierten (pistas de
     # intención comercial). Y contexto de GOOGLE ANALYTICS (volumen/conversiones recientes).
@@ -189,6 +214,22 @@ def gather_opportunities(client_id, brand=frozenset()):
     return {
         'striking_keywords': [{'keyword': s['keyword'], 'position': float(s['pos']), 'impressions': int(s['impr'])} for s in striking],
         'competitor_topics': [{'topic': t['topic'], 'score': int(t['opportunity_score'] or 0), 'why': t['reasoning']} for t in topics],
+        'competitor_keyword_gaps': [{
+            'keyword': g['keyword'],
+            'client_position': float(g['client_position'] or 0),
+            'competitor_url': g['competitor_url'],
+            'competitor_words': int(g['competitor_word_count'] or 0),
+            'competitor_has_schema': bool(g['competitor_has_schema']),
+            'recommendation': (g['recommendation'] or '')[:400],
+        } for g in kw_gaps],
+        'competitor_page_gaps': [{
+            'competitor_url': p['competitor_url'],
+            'competitor_title': p['competitor_title'],
+            'competitor_words': int(p['competitor_word_count'] or 0),
+            'our_words': int(p['client_word_count'] or 0),
+            'gap': (p['gap_analysis'] or '')[:500],
+            'recommendation': (p['recommendations'] or '')[:500],
+        } for p in comp_pairs],
         'seed_keywords': [{'keyword': s['keyword'], 'position': float(s['pos'] or 0), 'impressions': int(s['impr'] or 0)} for s in seed],
         'ads_signals': ads_signals,
         'ga4_context': ga4_context,
@@ -248,12 +289,14 @@ def generate_article(client, opps):
     system_prompt = f"""Eres redactor SEO senior B2B en español para {client['name']} ({client['domain']}).
 Tono de marca: {client.get('tone_of_voice') or 'profesional, técnico, orientado a negocio'}.
 
-Elige UN tema de blog que maximice el SEO combinando:
+Elige UN tema de blog que maximice el SEO combinando (ten MUY en cuenta el resultado del ESPÍA de competidores):
+- "competitor_keyword_gaps" (ESPÍA — señal MÁS fuerte): keywords por las que un competidor SÍ rankea y nosotros mal o nada. Son demanda real que estamos perdiendo: priorízalas. Cada una trae la URL del competidor que la gana, su nº de palabras ("competitor_words") y si usa schema; úsalo para SUPERAR su cobertura (más profundidad, mejor estructura, schema).
+- "competitor_page_gaps" (ESPÍA): páginas de competidores que superan a una nuestra equivalente, con "gap" (qué nos falta) y "recommendation". Úsalas para elegir temas donde podemos recuperar terreno y para saber qué profundidad/ángulo exige el tema (apunta a más palabras que "competitor_words").
+- "competitor_topics" (ESPÍA): temas que cubren varios competidores y nosotros no (rellenar huecos), ordenados por "score".
 - "striking_keywords": keywords donde ya rankeamos en posición 8-25 (mejorarlas da tráfico rápido).
-- "competitor_topics": temas que cubren competidores y nosotros no (rellenar gaps).
 - "ads_signals": acciones/campañas de Google Ads que YA convierten → pistas de intención COMERCIAL real del cliente (ignora prefijos técnicos como "GA4", "(web)", "click", y nombres de ciudad; quédate con el servicio/producto que sugieren).
 - "ga4_context": volumen y conversiones recientes de Analytics (solo contexto para calibrar la ambición del tema; no es una keyword).
-Prioriza temas con intención informacional/comercial claros, apoyándote en lo que convierte en Ads, y NO repitas nada de "already_covered".
+Prioriza por este orden: (1) lo que detecta el ESPÍA —competitor_keyword_gaps y competitor_page_gaps— cruzado con (2) lo que YA convierte en Ads; después (3) competitor_topics y striking_keywords. Cuando escribas sobre un gap del espía, cubre el tema con MÁS profundidad y mejor estructura que la página del competidor indicada. NO repitas nada de "already_covered".
 
 Si NO hay "striking_keywords" ni "competitor_topics" (cliente con poco tráfico), ELIGE IGUALMENTE un tema
 útil y relevante para el negocio a partir de "seed_keywords" (búsquedas reales del cliente, aunque tengan
@@ -403,12 +446,15 @@ def run_for_client(client_id, dry_run=False):
     brand = brand_terms(client)
     opps = gather_opportunities(client_id, brand)
     # Necesitamos ALGO de lo que tirar: oportunidades, o al menos keywords semilla o páginas reales
-    if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('seed_keywords') or opps.get('internal_link_targets')):
-        print("  ⚠ Sin datos suficientes (ni keywords ni páginas). Ejecuta antes Performance/Auditor para este cliente.")
+    if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('competitor_keyword_gaps')
+            or opps.get('competitor_page_gaps') or opps.get('seed_keywords') or opps.get('internal_link_targets')):
+        print("  ⚠ Sin datos suficientes (ni keywords ni páginas). Ejecuta antes Performance/Auditor/Espía para este cliente.")
         return
-    fallback = not opps['striking_keywords'] and not opps['competitor_topics']
-    print(f"  {len(opps['striking_keywords'])} keywords striking · {len(opps['competitor_topics'])} temas de competidores · "
-          f"{len(opps.get('seed_keywords', []))} keywords semilla · {len(opps.get('internal_link_targets', []))} páginas"
+    fallback = not (opps['striking_keywords'] or opps['competitor_topics']
+                    or opps.get('competitor_keyword_gaps') or opps.get('competitor_page_gaps'))
+    print(f"  {len(opps['striking_keywords'])} keywords striking · {len(opps['competitor_topics'])} temas competidores · "
+          f"ESPÍA {len(opps.get('competitor_keyword_gaps', []))} kw-gaps + {len(opps.get('competitor_page_gaps', []))} page-gaps · "
+          f"{len(opps.get('seed_keywords', []))} semilla · {len(opps.get('internal_link_targets', []))} páginas"
           + ("  [modo fallback: sin oportunidades fuertes, escribe a partir de servicios/keywords]" if fallback else ""))
 
     slots = weekly_slots(client_id, POSTS_PER_RUN)
