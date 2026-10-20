@@ -45,8 +45,10 @@ if GEMINI_API_KEY:
 # por defecto respeta GEMINI_MODEL. Sugerido para artículos extensos: gemini-flash-latest.
 MODEL_NAME = os.getenv('WRITER_MODEL') or os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
 
-POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '1'))  # 1 post/semana por cliente
-PUBLISH_WEEKDAY = 1  # 0=lunes ... el hueco semanal cae en martes
+POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '2'))  # posts/semana por cliente
+PUBLISH_WEEKDAY = 1  # 0=lunes ... (compat.)
+# Días de publicación dentro de la semana (0=lunes). Con 2 posts/semana → martes y viernes.
+PUBLISH_WEEKDAYS = [int(x) for x in os.getenv('WRITER_PUBLISH_WEEKDAYS', '1,4').split(',') if x.strip() != '']
 
 
 # Palabras del nombre del cliente que NO identifican la marca (no se filtran como búsqueda de marca)
@@ -212,6 +214,32 @@ def next_weekly_slot(client_id):
     # alinear al día de publicación (martes)
     shift = (PUBLISH_WEEKDAY - target.weekday()) % 7
     return target + timedelta(days=shift)
+
+
+def weekly_slots(client_id, n):
+    """Devuelve n fechas de publicación en UNA MISMA semana (la siguiente libre tras el último
+    draft programado), repartidas en PUBLISH_WEEKDAYS (p.ej. martes y viernes). Así salen
+    2 posts/semana en días distintos, no en semanas consecutivas."""
+    row = db.query_one("""
+        SELECT MAX(scheduled_for) AS last FROM content_drafts
+        WHERE client_id = ? AND status <> 'rejected' AND scheduled_for IS NOT NULL
+    """, [client_id])
+    base = date.today()
+    if row and row.get('last'):
+        try:
+            base = max(base, date.fromisoformat(str(row['last'])[:10]))
+        except Exception:
+            pass
+    # lunes de la semana SIGUIENTE a la del último programado (evita colisiones con lo ya puesto)
+    monday_next = base - timedelta(days=base.weekday()) + timedelta(days=7)
+    wds = PUBLISH_WEEKDAYS or [PUBLISH_WEEKDAY]
+    slots, k = [], 0
+    while len(slots) < n:
+        wk = monday_next + timedelta(days=7 * (k // len(wds)))
+        wd = wds[k % len(wds)]
+        slots.append(wk + timedelta(days=wd))
+        k += 1
+    return slots
 
 
 def generate_article(client, opps):
@@ -383,6 +411,7 @@ def run_for_client(client_id, dry_run=False):
           f"{len(opps.get('seed_keywords', []))} keywords semilla · {len(opps.get('internal_link_targets', []))} páginas"
           + ("  [modo fallback: sin oportunidades fuertes, escribe a partir de servicios/keywords]" if fallback else ""))
 
+    slots = weekly_slots(client_id, POSTS_PER_RUN)
     for i in range(POSTS_PER_RUN):
         art = generate_article(client, opps)
         if art and is_brand_query(art.get('focus_keyword', ''), brand):
@@ -394,7 +423,7 @@ def run_for_client(client_id, dry_run=False):
         if not art or not art.get('content_html'):
             print("  ✗ No se pudo generar el artículo.")
             continue
-        slot = next_weekly_slot(client_id)
+        slot = slots[i] if i < len(slots) else next_weekly_slot(client_id)
         save_draft(client_id, art, slot, dry_run=dry_run)
         # marcar como cubierto en memoria para no repetir en el mismo run
         opps['already_covered'].append({'title': art.get('title'), 'keyword': art.get('focus_keyword')})
