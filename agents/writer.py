@@ -49,6 +49,54 @@ POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '1'))  # 1 post/semana por
 PUBLISH_WEEKDAY = 1  # 0=lunes ... el hueco semanal cae en martes
 
 
+# Palabras del nombre del cliente que NO identifican la marca (no se filtran como búsqueda de marca)
+BRAND_GENERIC = {
+    'grupo', 'grup', 'group', 'global', 'logistics', 'logistica', 'tubes', 'tubos', 'hotel', 'hoteles',
+    'iberica', 'fisioterapia', 'calatayud', 'apartments', 'sales', 'consulting', 'servicios',
+}
+
+
+def _norm(text):
+    text = (text or '').lower()
+    for a, b in {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n', 'à': 'a', 'è': 'e', 'ò': 'o', 'ç': 'c', 'ï': 'i'}.items():
+        text = text.replace(a, b)
+    return text
+
+
+def brand_terms(client):
+    """Términos que identifican la marca: palabras del nombre presentes en el dominio + el dominio sin TLD.
+    Ej.: 'Marina Camacho' / marinacamacho.com → {'marina', 'camacho', 'marinacamacho'}."""
+    host = urlparse(client['domain'] if '//' in (client['domain'] or '') else '//' + (client['domain'] or '')).netloc
+    dom = re.sub(r'\.[a-z.]+$', '', host.lower().removeprefix('www.')).replace('-', '')
+    terms = {dom} if dom else set()
+    for tok in re.findall(r'[a-z0-9]+', _norm(client.get('name'))):
+        if len(tok) >= 4 and tok not in BRAND_GENERIC and tok in dom:
+            terms.add(tok)
+    return terms
+
+
+def is_brand_query(keyword, terms):
+    """True si la búsqueda contiene la marca (palabra suelta o dominio pegado)."""
+    k = _norm(keyword)
+    words = set(re.findall(r'[a-z0-9]+', k))
+    if words & terms or any(len(t) >= 6 and t in k.replace(' ', '') for t in terms):
+        return True
+    # erratas del dominio completo ("converpack" → convertpack): 1 letra de diferencia, solo dominios largos
+    return any(len(t) >= 8 and _lev1(w, t) for t in terms for w in words | {k.replace(' ', '')})
+
+
+def _lev1(a, b):
+    """True si a y b difieren en exactamente una edición (inserción, borrado o sustitución)."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i + (len(a) == len(b)):] == b[i + 1:]
+
+
 def slugify(text):
     text = (text or '').lower().strip()
     reps = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ñ': 'n', 'ü': 'u'}
@@ -59,15 +107,16 @@ def slugify(text):
     return text[:90]
 
 
-def gather_opportunities(client_id):
-    """Semillas de temas: keywords striking-distance + temas ganadores de competidores."""
+def gather_opportunities(client_id, brand=frozenset()):
+    """Semillas de temas: keywords striking-distance + temas ganadores de competidores.
+    Las búsquedas de marca (`brand`) se descartan: no son temas de blog."""
     striking = db.query("""
         SELECT keyword, ROUND(AVG(position), 1) AS pos, SUM(impressions) AS impr
         FROM metrics_keywords_daily
         WHERE client_id = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         GROUP BY keyword
         HAVING pos BETWEEN 8 AND 25 AND impr >= 20
-        ORDER BY impr DESC LIMIT 15
+        ORDER BY impr DESC LIMIT 30
     """, [client_id])
 
     topics = db.query("""
@@ -107,13 +156,40 @@ def gather_opportunities(client_id):
         SELECT keyword, ROUND(AVG(position), 1) AS pos, SUM(impressions) AS impr
         FROM metrics_keywords_daily
         WHERE client_id = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-        GROUP BY keyword ORDER BY impr DESC LIMIT 20
+        GROUP BY keyword ORDER BY impr DESC LIMIT 40
     """, [client_id])
+
+    striking = [s for s in striking if not is_brand_query(s['keyword'], brand)][:15]
+    seed = [s for s in seed if not is_brand_query(s['keyword'], brand)][:20]
+
+    # Señales de GOOGLE ADS: acciones de conversión y campañas que ya convierten (pistas de
+    # intención comercial). Y contexto de GOOGLE ANALYTICS (volumen/conversiones recientes).
+    ads_signals, ga4_context = [], []
+    try:
+        _t = date.today(); _m = _t.month - 3; _y = _t.year
+        while _m <= 0: _m += 12; _y -= 1
+        since_m = f"{_y:04d}-{_m:02d}"
+        acts = db.query("""SELECT action_name, SUM(conversions) c FROM ads_conversions_monthly
+            WHERE client_id = ? AND month >= ? GROUP BY action_name ORDER BY c DESC LIMIT 10""", [client_id, since_m])
+        camps = db.query("""SELECT campaign_name, SUM(conversions) c, SUM(clicks) k FROM ads_campaigns_monthly
+            WHERE client_id = ? AND month >= ? GROUP BY campaign_name ORDER BY c DESC, k DESC LIMIT 10""", [client_id, since_m])
+        ads_signals = ([{'accion': a['action_name'], 'conversiones': float(a['c'] or 0)} for a in acts]
+                       + [{'campana': c['campaign_name'], 'conversiones': float(c['c'] or 0)} for c in camps])
+    except Exception:
+        ads_signals = []
+    try:
+        g = db.query("""SELECT month, sessions, conversions FROM ga4_metrics_monthly
+            WHERE client_id = ? ORDER BY month DESC LIMIT 3""", [client_id])
+        ga4_context = [{'mes': r['month'], 'sesiones': int(r['sessions'] or 0), 'conversiones': float(r['conversions'] or 0)} for r in g]
+    except Exception:
+        ga4_context = []
 
     return {
         'striking_keywords': [{'keyword': s['keyword'], 'position': float(s['pos']), 'impressions': int(s['impr'])} for s in striking],
         'competitor_topics': [{'topic': t['topic'], 'score': int(t['opportunity_score'] or 0), 'why': t['reasoning']} for t in topics],
         'seed_keywords': [{'keyword': s['keyword'], 'position': float(s['pos'] or 0), 'impressions': int(s['impr'] or 0)} for s in seed],
+        'ads_signals': ads_signals,
+        'ga4_context': ga4_context,
         'already_covered': [{'title': r['title'], 'keyword': r['target_keyword']} for r in recent],
         'internal_link_targets': internal,
     }
@@ -140,13 +216,16 @@ def next_weekly_slot(client_id):
 
 def generate_article(client, opps):
     """Genera un artículo completo + SEO a partir de las oportunidades. Devuelve dict o None."""
+    brand_list = ', '.join(sorted(brand_terms(client)))
     system_prompt = f"""Eres redactor SEO senior B2B en español para {client['name']} ({client['domain']}).
 Tono de marca: {client.get('tone_of_voice') or 'profesional, técnico, orientado a negocio'}.
 
 Elige UN tema de blog que maximice el SEO combinando:
 - "striking_keywords": keywords donde ya rankeamos en posición 8-25 (mejorarlas da tráfico rápido).
 - "competitor_topics": temas que cubren competidores y nosotros no (rellenar gaps).
-Prioriza temas con intención informacional/comercial claros y NO repitas nada de "already_covered".
+- "ads_signals": acciones/campañas de Google Ads que YA convierten → pistas de intención COMERCIAL real del cliente (ignora prefijos técnicos como "GA4", "(web)", "click", y nombres de ciudad; quédate con el servicio/producto que sugieren).
+- "ga4_context": volumen y conversiones recientes de Analytics (solo contexto para calibrar la ambición del tema; no es una keyword).
+Prioriza temas con intención informacional/comercial claros, apoyándote en lo que convierte en Ads, y NO repitas nada de "already_covered".
 
 Si NO hay "striking_keywords" ni "competitor_topics" (cliente con poco tráfico), ELIGE IGUALMENTE un tema
 útil y relevante para el negocio a partir de "seed_keywords" (búsquedas reales del cliente, aunque tengan
@@ -160,6 +239,11 @@ Primero DECIDE el tipo de contenido ("content_type"):
 - "landing": página de servicio orientada a conversión (describe un servicio/solución que
   ofrece la empresa, con beneficios, proceso, aplicaciones y CTA claro). Ideal cuando la
   oportunidad es comercial/transaccional o el competidor tiene una landing de ese servicio.
+
+MARCA: la "focus_keyword" NUNCA puede contener el nombre de la marca ni de la persona ({brand_list}).
+Las búsquedas de marca no son temas de blog. Elige una keyword genérica del sector (lo que buscaría alguien
+que aún no conoce a {client['name']}) y escríbela en español correcto, con tildes y como la buscaría una persona.
+Intégrala en el texto con naturalidad: nunca la metas literal si queda agramatical (p. ej. sin artículo o sin tildes).
 
 Escribe un contenido EXTENSO, EXHAUSTIVO y bien estructurado, listo para publicar
 (OBJETIVO: 1300-1900 palabras; nunca menos de 1200) en HTML semántico:
@@ -288,7 +372,8 @@ def run_for_client(client_id, dry_run=False):
         return
     print(f"\n{'='*60}\n  Redactor · {client['name']} ({client['domain']}){'  [DRY-RUN]' if dry_run else ''}\n{'='*60}")
 
-    opps = gather_opportunities(client_id)
+    brand = brand_terms(client)
+    opps = gather_opportunities(client_id, brand)
     # Necesitamos ALGO de lo que tirar: oportunidades, o al menos keywords semilla o páginas reales
     if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('seed_keywords') or opps.get('internal_link_targets')):
         print("  ⚠ Sin datos suficientes (ni keywords ni páginas). Ejecuta antes Performance/Auditor para este cliente.")
@@ -300,6 +385,12 @@ def run_for_client(client_id, dry_run=False):
 
     for i in range(POSTS_PER_RUN):
         art = generate_article(client, opps)
+        if art and is_brand_query(art.get('focus_keyword', ''), brand):
+            print(f"  ⚠ focus_keyword de marca ({art.get('focus_keyword')!r}); se regenera")
+            art = generate_article(client, opps)
+            if art and is_brand_query(art.get('focus_keyword', ''), brand):
+                print("  ✗ La IA insiste en una keyword de marca; se descarta el artículo.")
+                continue
         if not art or not art.get('content_html'):
             print("  ✗ No se pudo generar el artículo.")
             continue
