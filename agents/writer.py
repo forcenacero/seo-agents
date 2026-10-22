@@ -99,6 +99,34 @@ def _lev1(a, b):
     return a[i + (len(a) == len(b)):] == b[i + 1:]
 
 
+
+def avoid_terms(client):
+    """Temas que el cliente no quiere en el blog (clients.seo_criteria.avoid_topics), normalizados."""
+    try:
+        crit = json.loads(client.get('seo_criteria') or '{}')
+    except Exception:
+        crit = {}
+    return [t for t in (_norm(x) for x in crit.get('avoid_topics', []) if isinstance(x, str)) if len(t) >= 4]
+
+
+def hits_avoid(text, terms):
+    t = _norm(text or '')
+    return next((a for a in terms if a in t), None)
+
+
+def filter_avoid(opps, terms):
+    """Quita de las oportunidades lo que toque un tema excluido y deja la lista a la vista de la IA."""
+    if not terms:
+        return opps
+    keys = {'striking_keywords': 'keyword', 'competitor_topics': 'topic', 'competitor_keyword_gaps': 'keyword', 'seed_keywords': 'keyword'}
+    for lst, k in keys.items():
+        if opps.get(lst):
+            opps[lst] = [x for x in opps[lst] if not hits_avoid(x.get(k, ''), terms)]
+    if opps.get('competitor_page_gaps'):
+        opps['competitor_page_gaps'] = [x for x in opps['competitor_page_gaps'] if not hits_avoid((x.get('competitor_title') or '') + ' ' + (x.get('gap') or ''), terms)]
+    opps['avoid_topics'] = terms
+    return opps
+
 def slugify(text):
     text = (text or '').lower().strip()
     reps = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ñ': 'n', 'ü': 'u'}
@@ -325,6 +353,7 @@ Escribe un contenido EXTENSO, EXHAUSTIVO y bien estructurado, listo para publica
   contexto/por qué importa, definiciones, tipos o variantes, proceso o cómo hacerlo paso a paso,
   beneficios, errores comunes a evitar, criterios de decisión y casos/aplicaciones reales del sector.
   Prohibido el relleno genérico y repetir la misma idea con otras palabras.
+- Si las oportunidades incluyen "avoid_topics", NUNCA elijas ni trates como tema principal nada relacionado con esos términos (son temas que el cliente ha vetado).
 - INTRODUCCIÓN de 2-3 párrafos que enganche, plantee el problema y adelante qué va a aprender el lector.
 - Incluye AL MENOS UNA lista (<ul> u <ol>) y, cuando sea pertinente, AL MENOS UNA <table>
   (p.ej. comparativa de opciones, tipos, o ventajas frente a inconvenientes).
@@ -437,7 +466,7 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
 
 
 def run_for_client(client_id, dry_run=False):
-    client = db.query_one("SELECT id, name, domain, tone_of_voice FROM clients WHERE id = ?", [client_id])
+    client = db.query_one("SELECT id, name, domain, tone_of_voice, seo_criteria FROM clients WHERE id = ?", [client_id])
     if not client:
         print(f"  ⚠ Cliente {client_id} no encontrado")
         return
@@ -445,6 +474,10 @@ def run_for_client(client_id, dry_run=False):
 
     brand = brand_terms(client)
     opps = gather_opportunities(client_id, brand)
+    avoid = avoid_terms(client)
+    opps = filter_avoid(opps, avoid)
+    if avoid:
+        print(f"  Temas excluidos por el cliente: {', '.join(avoid)}")
     # Necesitamos ALGO de lo que tirar: oportunidades, o al menos keywords semilla o páginas reales
     if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('competitor_keyword_gaps')
             or opps.get('competitor_page_gaps') or opps.get('seed_keywords') or opps.get('internal_link_targets')):
@@ -465,6 +498,12 @@ def run_for_client(client_id, dry_run=False):
             art = generate_article(client, opps)
             if art and is_brand_query(art.get('focus_keyword', ''), brand):
                 print("  ✗ La IA insiste en una keyword de marca; se descarta el artículo.")
+                continue
+        if art and avoid and hits_avoid(f"{art.get('focus_keyword', '')} {art.get('title', '')}", avoid):
+            print(f"  ⚠ Tema excluido por el cliente ({hits_avoid(art.get('focus_keyword', '') + ' ' + art.get('title', ''), avoid)!r}); se regenera")
+            art = generate_article(client, opps)
+            if art and hits_avoid(f"{art.get('focus_keyword', '')} {art.get('title', '')}", avoid):
+                print("  ✗ La IA insiste en un tema excluido; se descarta el artículo.")
                 continue
         if not art or not art.get('content_html'):
             print("  ✗ No se pudo generar el artículo.")
