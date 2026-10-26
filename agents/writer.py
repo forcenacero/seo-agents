@@ -507,11 +507,19 @@ def run_for_client(client_id, dry_run=False):
 
     # TOPE POR COLA: posts cercanos (≤NEAR_DAYS) que el cliente ya tiene en cola (pending_review
     # a punto de publicar + ya programados en WP). Si alcanza POSTS_PER_RUN, no genera más.
+    # Cuenta SOLO lo que realmente ocupará un hueco cercano: lo ya programado en WP, o los
+    # borradores frescos que el autopilot SÍ publicará (generados ≤10 días). Los pending_review
+    # viejos (que el autopilot ya ignora por antigüedad) NO bloquean la generación.
     nq = db.query_one("""
         SELECT COUNT(*) n FROM content_drafts
-        WHERE client_id = ? AND status <> 'rejected'
-          AND scheduled_for >= CURDATE()
+        WHERE client_id = ? AND scheduled_for >= CURDATE()
           AND scheduled_for <= DATE_ADD(CURDATE(), INTERVAL ? DAY)
+          AND (
+                (status = 'scheduled' AND wp_post_id > 0)
+             OR (status IN ('pending_review','approved')
+                 AND (wp_post_id IS NULL OR wp_post_id = 0)
+                 AND generated_at >= DATE_SUB(NOW(), INTERVAL 10 DAY))
+          )
     """, [client_id, NEAR_DAYS])
     queued = int((nq or {}).get('n') or 0)
     need = max(0, POSTS_PER_RUN - queued)
