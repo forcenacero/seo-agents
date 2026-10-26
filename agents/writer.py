@@ -49,6 +49,9 @@ POSTS_PER_RUN = int(os.getenv('WRITER_POSTS_PER_RUN', '2'))  # posts/semana por 
 PUBLISH_WEEKDAY = 1  # 0=lunes ... (compat.)
 # Días de publicación dentro de la semana (0=lunes). Con 2 posts/semana → martes y viernes.
 PUBLISH_WEEKDAYS = [int(x) for x in os.getenv('WRITER_PUBLISH_WEEKDAYS', '1,4').split(',') if x.strip() != '']
+# Horizonte: solo se programa dentro de los próximos N días (evita que las fechas se amontonen
+# meses/años al futuro). Si un cliente ya tiene POSTS_PER_RUN posts en esta ventana, no genera más.
+NEAR_DAYS = int(os.getenv('WRITER_HORIZON_DAYS', '14'))
 
 
 # Palabras del nombre del cliente que NO identifican la marca (no se filtran como búsqueda de marca)
@@ -266,49 +269,48 @@ def gather_opportunities(client_id, brand=frozenset()):
     }
 
 
-def next_weekly_slot(client_id):
-    """Siguiente hueco semanal libre (tras el último draft programado del cliente)."""
-    row = db.query_one("""
-        SELECT MAX(scheduled_for) AS last FROM content_drafts
+def _taken_dates(client_id):
+    """Fechas de publicación ya ocupadas en la ventana cercana (no se pisan)."""
+    rows = db.query("""
+        SELECT scheduled_for FROM content_drafts
         WHERE client_id = ? AND status <> 'rejected' AND scheduled_for IS NOT NULL
-    """, [client_id])
-    base = date.today()
-    if row and row.get('last'):
+          AND scheduled_for >= CURDATE()
+          AND scheduled_for <= DATE_ADD(CURDATE(), INTERVAL ? DAY)
+    """, [client_id, NEAR_DAYS + 14])
+    taken = set()
+    for r in rows:
         try:
-            last = date.fromisoformat(str(row['last'])[:10])
-            base = max(base, last)
+            taken.add(date.fromisoformat(str(r['scheduled_for'])[:10]))
         except Exception:
             pass
-    target = base + timedelta(days=7)
-    # alinear al día de publicación (martes)
-    shift = (PUBLISH_WEEKDAY - target.weekday()) % 7
-    return target + timedelta(days=shift)
+    return taken
+
+
+def upcoming_slots(n, taken):
+    """n próximas fechas de publicación en PUBLISH_WEEKDAYS a partir de mañana, saltando las ya
+    ocupadas. Fechas SIEMPRE cercanas (no se amontonan al futuro); busca hueco hasta ~8 semanas."""
+    wds = set(PUBLISH_WEEKDAYS or [PUBLISH_WEEKDAY])
+    out, d = [], date.today() + timedelta(days=1)
+    for _ in range(60):
+        if d.weekday() in wds and d not in taken and d not in out:
+            out.append(d)
+            if len(out) >= n:
+                break
+        d += timedelta(days=1)
+    return out
+
+
+def next_weekly_slot(client_id):
+    """Siguiente hueco de publicación libre y cercano (compat.)."""
+    s = upcoming_slots(1, _taken_dates(client_id))
+    return s[0] if s else date.today() + timedelta(days=1)
 
 
 def weekly_slots(client_id, n):
-    """Devuelve n fechas de publicación en UNA MISMA semana (la siguiente libre tras el último
-    draft programado), repartidas en PUBLISH_WEEKDAYS (p.ej. martes y viernes). Así salen
-    2 posts/semana en días distintos, no en semanas consecutivas."""
-    row = db.query_one("""
-        SELECT MAX(scheduled_for) AS last FROM content_drafts
-        WHERE client_id = ? AND status <> 'rejected' AND scheduled_for IS NOT NULL
-    """, [client_id])
-    base = date.today()
-    if row and row.get('last'):
-        try:
-            base = max(base, date.fromisoformat(str(row['last'])[:10]))
-        except Exception:
-            pass
-    # lunes de la semana SIGUIENTE a la del último programado (evita colisiones con lo ya puesto)
-    monday_next = base - timedelta(days=base.weekday()) + timedelta(days=7)
-    wds = PUBLISH_WEEKDAYS or [PUBLISH_WEEKDAY]
-    slots, k = [], 0
-    while len(slots) < n:
-        wk = monday_next + timedelta(days=7 * (k // len(wds)))
-        wd = wds[k % len(wds)]
-        slots.append(wk + timedelta(days=wd))
-        k += 1
-    return slots
+    """n fechas de publicación cercanas (próximos días en PUBLISH_WEEKDAYS), sin pisar las ya
+    programadas del cliente. A diferencia de antes, NO parten del último draft programado, así
+    que las fechas no se amontonan meses al futuro."""
+    return upcoming_slots(n, _taken_dates(client_id))
 
 
 def generate_article(client, opps):
@@ -465,6 +467,17 @@ def save_draft(client_id, art, scheduled_for, dry_run=False):
     ])
 
 
+def log_run(client_id, status, summary=None, error=None):
+    """Registra la ejecución en agent_runs (para que el panel vea el Redactor activo)."""
+    try:
+        db.execute("""
+            INSERT INTO agent_runs (client_id, agent_name, started_at, finished_at, status, output_summary, error_message)
+            VALUES (?, 'writer', NOW(), NOW(), ?, ?, ?)
+        """, [client_id, status, json.dumps(summary, ensure_ascii=False) if summary else None, error])
+    except Exception:
+        pass
+
+
 def run_for_client(client_id, dry_run=False):
     client = db.query_one("SELECT id, name, domain, tone_of_voice, seo_criteria FROM clients WHERE id = ?", [client_id])
     if not client:
@@ -482,6 +495,8 @@ def run_for_client(client_id, dry_run=False):
     if not (opps['striking_keywords'] or opps['competitor_topics'] or opps.get('competitor_keyword_gaps')
             or opps.get('competitor_page_gaps') or opps.get('seed_keywords') or opps.get('internal_link_targets')):
         print("  ⚠ Sin datos suficientes (ni keywords ni páginas). Ejecuta antes Performance/Auditor/Espía para este cliente.")
+        if not dry_run:
+            log_run(client_id, 'error', error='Sin datos suficientes')
         return
     fallback = not (opps['striking_keywords'] or opps['competitor_topics']
                     or opps.get('competitor_keyword_gaps') or opps.get('competitor_page_gaps'))
@@ -490,8 +505,25 @@ def run_for_client(client_id, dry_run=False):
           f"{len(opps.get('seed_keywords', []))} semilla · {len(opps.get('internal_link_targets', []))} páginas"
           + ("  [modo fallback: sin oportunidades fuertes, escribe a partir de servicios/keywords]" if fallback else ""))
 
-    slots = weekly_slots(client_id, POSTS_PER_RUN)
-    for i in range(POSTS_PER_RUN):
+    # TOPE POR COLA: posts cercanos (≤NEAR_DAYS) que el cliente ya tiene en cola (pending_review
+    # a punto de publicar + ya programados en WP). Si alcanza POSTS_PER_RUN, no genera más.
+    nq = db.query_one("""
+        SELECT COUNT(*) n FROM content_drafts
+        WHERE client_id = ? AND status <> 'rejected'
+          AND scheduled_for >= CURDATE()
+          AND scheduled_for <= DATE_ADD(CURDATE(), INTERVAL ? DAY)
+    """, [client_id, NEAR_DAYS])
+    queued = int((nq or {}).get('n') or 0)
+    need = max(0, POSTS_PER_RUN - queued)
+    if need == 0:
+        print(f"  ⏸  {queued} posts ya en cola (≤{NEAR_DAYS} días); no se generan más esta semana.")
+        if not dry_run:
+            log_run(client_id, 'success', {'generated': 0, 'skipped': 'cola_llena', 'queued': queued})
+        return
+
+    slots = weekly_slots(client_id, need)
+    generated = 0
+    for i in range(need):
         art = generate_article(client, opps)
         if art and is_brand_query(art.get('focus_keyword', ''), brand):
             print(f"  ⚠ focus_keyword de marca ({art.get('focus_keyword')!r}); se regenera")
@@ -510,8 +542,11 @@ def run_for_client(client_id, dry_run=False):
             continue
         slot = slots[i] if i < len(slots) else next_weekly_slot(client_id)
         save_draft(client_id, art, slot, dry_run=dry_run)
+        generated += 1
         # marcar como cubierto en memoria para no repetir en el mismo run
         opps['already_covered'].append({'title': art.get('title'), 'keyword': art.get('focus_keyword')})
+    if not dry_run:
+        log_run(client_id, 'success', {'generated': generated, 'queued_before': queued, 'target': POSTS_PER_RUN})
 
 
 def main():
