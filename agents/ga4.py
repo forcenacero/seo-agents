@@ -167,6 +167,34 @@ def run_for_client(client, months=MONTHS):
             organic_sessions=VALUES(organic_sessions), paid_sessions=VALUES(paid_sessions)
     """, rows)
 
+    # ── Consulta 3: sesiones y usuarios por PAÍS y mes → ga4_country_monthly ──
+    try:
+        req3 = RunReportRequest(
+            property=property_id, date_ranges=date_range,
+            dimensions=[Dimension(name='yearMonth'), Dimension(name='country'), Dimension(name='countryId')],
+            metrics=[Metric(name='sessions'), Metric(name='totalUsers')],
+        )
+        resp3 = ga.run_report(req3)
+        crows = []
+        for row in resp3.rows:
+            m = ym(row.dimension_values[0].value)
+            country = (row.dimension_values[1].value or '(sin definir)')[:100]
+            cid = (row.dimension_values[2].value or '')[:4]
+            s = int(_num(row.metric_values[0].value))
+            u = int(_num(row.metric_values[1].value))
+            if m in monthly and (s or u):
+                crows.append([client['id'], m, country, cid, s, u])
+        # Refresco completo (el agente reescanea todo el rango cada día).
+        db.execute("DELETE FROM ga4_country_monthly WHERE client_id = ?", [client['id']])
+        if crows:
+            db.execute_many("""
+                INSERT INTO ga4_country_monthly (client_id, month, country, country_id, sessions, total_users)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE sessions=VALUES(sessions), total_users=VALUES(total_users), country_id=VALUES(country_id)
+            """, crows)
+    except Exception as e:
+        print(f"    (sin desglose por país: {e})")
+
     last = sorted(monthly.keys())[-1]
     print(f"  ✓ {client['name']}: {len(rows)} meses · último {last} = {monthly[last]['sessions']} sesiones")
     save_run(client['id'], 'success', {'property': prop, 'months': months},
