@@ -122,28 +122,44 @@ def run_for_client(client, months=MONTHS):
             'avg_session_duration': round(vals.get('averageSessionDuration', 0), 2),
             'conversions': round(vals.get('conversions', 0), 2) if conv_ok else 0,
             'organic_sessions': 0, 'paid_sessions': 0,
+            'organic_conversions': 0.0, 'paid_conversions': 0.0,
         }
 
-    # ── Consulta 2: sesiones por canal (organic/paid) ──
+    # ── Consulta 2: sesiones Y conversiones por canal (organic/paid) ──
+    ch_metrics = ['sessions', 'conversions']
     try:
         req2 = RunReportRequest(
             property=property_id, date_ranges=date_range,
             dimensions=[Dimension(name='yearMonth'), Dimension(name='sessionDefaultChannelGroup')],
-            metrics=[Metric(name='sessions')],
+            metrics=[Metric(name=x) for x in ch_metrics],
         )
         resp2 = ga.run_report(req2)
+    except Exception:
+        ch_metrics = ['sessions']   # propiedades nuevas sin 'conversions' por canal
+        try:
+            req2 = RunReportRequest(
+                property=property_id, date_ranges=date_range,
+                dimensions=[Dimension(name='yearMonth'), Dimension(name='sessionDefaultChannelGroup')],
+                metrics=[Metric(name='sessions')],
+            )
+            resp2 = ga.run_report(req2)
+        except Exception as e:
+            resp2 = None
+            print(f"    (sin desglose por canal: {e})")
+    if resp2 is not None:
         for row in resp2.rows:
             m = ym(row.dimension_values[0].value)
             channel = row.dimension_values[1].value
-            s = int(_num(row.metric_values[0].value))
             if m not in monthly:
                 continue
+            s = int(_num(row.metric_values[0].value))
+            cv = round(_num(row.metric_values[1].value), 2) if len(ch_metrics) > 1 else 0.0
             if channel == 'Organic Search':
                 monthly[m]['organic_sessions'] += s
+                monthly[m]['organic_conversions'] += cv
             elif is_paid(channel):
                 monthly[m]['paid_sessions'] += s
-    except Exception as e:
-        print(f"    (sin desglose por canal: {e})")
+                monthly[m]['paid_conversions'] += cv
 
     if not monthly:
         save_run(client['id'], 'success', {'property': prop}, {'months': 0}, None)
@@ -154,17 +170,20 @@ def run_for_client(client, months=MONTHS):
     for m, d in monthly.items():
         rows.append([client['id'], m, d['sessions'], d['total_users'], d['new_users'],
                      d['engaged_sessions'], d['screen_page_views'], d['avg_session_duration'],
-                     d['conversions'], d['organic_sessions'], d['paid_sessions']])
+                     d['conversions'], d['organic_sessions'], d['paid_sessions'],
+                     d['organic_conversions'], d['paid_conversions']])
     db.execute_many("""
         INSERT INTO ga4_metrics_monthly
             (client_id, month, sessions, total_users, new_users, engaged_sessions,
-             screen_page_views, avg_session_duration, conversions, organic_sessions, paid_sessions)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             screen_page_views, avg_session_duration, conversions, organic_sessions, paid_sessions,
+             organic_conversions, paid_conversions)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
             sessions=VALUES(sessions), total_users=VALUES(total_users), new_users=VALUES(new_users),
             engaged_sessions=VALUES(engaged_sessions), screen_page_views=VALUES(screen_page_views),
             avg_session_duration=VALUES(avg_session_duration), conversions=VALUES(conversions),
-            organic_sessions=VALUES(organic_sessions), paid_sessions=VALUES(paid_sessions)
+            organic_sessions=VALUES(organic_sessions), paid_sessions=VALUES(paid_sessions),
+            organic_conversions=VALUES(organic_conversions), paid_conversions=VALUES(paid_conversions)
     """, rows)
 
     # ── Consulta 3: sesiones y usuarios por PAÍS y mes → ga4_country_monthly ──
