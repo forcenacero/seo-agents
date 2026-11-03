@@ -241,6 +241,40 @@ def run_for_client(client, months=MONTHS):
     except Exception as e:
         print(f"    (sin conversiones por evento: {e})")
 
+    # ── Consulta 5: conversiones por DÍA y canal (últimos 95 días) → ga4_conv_daily ──
+    try:
+        start95 = (date.today() - relativedelta(days=95)).isoformat()
+        req5 = RunReportRequest(
+            property=property_id, date_ranges=[DateRange(start_date=start95, end_date=end)],
+            dimensions=[Dimension(name='date'), Dimension(name='sessionDefaultChannelGroup')],
+            metrics=[Metric(name='conversions')],
+        )
+        resp5 = ga.run_report(req5)
+        daily = {}
+        for row in resp5.rows:
+            draw = row.dimension_values[0].value  # YYYYMMDD
+            if len(draw) < 8:
+                continue
+            d_iso = draw[:4] + '-' + draw[4:6] + '-' + draw[6:8]
+            ch = row.dimension_values[1].value
+            cv = round(_num(row.metric_values[0].value), 2)
+            if cv <= 0:
+                continue
+            slot = daily.setdefault(d_iso, [0.0, 0.0, 0.0])
+            slot[2] += cv
+            if ch == 'Organic Search':
+                slot[0] += cv
+            elif is_paid(ch):
+                slot[1] += cv
+        db.execute("DELETE FROM ga4_conv_daily WHERE client_id = ?", [client['id']])
+        if daily:
+            drows = [[client['id'], d, round(v[0], 2), round(v[1], 2), round(v[2], 2)] for d, v in daily.items()]
+            db.execute_many("""INSERT INTO ga4_conv_daily (client_id, date, organic_conv, paid_conv, total_conv)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE organic_conv=VALUES(organic_conv), paid_conv=VALUES(paid_conv), total_conv=VALUES(total_conv)""", drows)
+    except Exception as e:
+        print(f"    (sin conversiones por día: {e})")
+
     last = sorted(monthly.keys())[-1]
     print(f"  ✓ {client['name']}: {len(rows)} meses · último {last} = {monthly[last]['sessions']} sesiones")
     save_run(client['id'], 'success', {'property': prop, 'months': months},
