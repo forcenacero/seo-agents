@@ -136,13 +136,16 @@ def run_for_client(client, months=MONTHS):
     try:
         cquery = f"""
             SELECT campaign.id, campaign.name,
-                   segments.conversion_action_name, segments.conversion_action_category, segments.month,
+                   segments.conversion_action_name, segments.conversion_action_category,
+                   segments.month, segments.date,
                    metrics.conversions, metrics.conversions_value
             FROM campaign
             WHERE segments.date BETWEEN '{start}' AND '{end}'
         """
         conv_by = {}       # (month, name) -> {cat, conv, val}
         conv_camp = {}     # (month, camp_id, name) -> {camp_name, cat, conv, val}
+        conv_day = {}      # (date, name) -> {cat, conv}  (últimos 95 días para el detalle por día)
+        day_floor = (date.today() - relativedelta(days=95)).isoformat()
         for batch in ga.search_stream(customer_id=cid, query=cquery):
             for row in batch.results:
                 month = str(row.segments.month)[:7]
@@ -154,6 +157,10 @@ def run_for_client(client, months=MONTHS):
                 camp_id = str(row.campaign.id)
                 ec = conv_camp.setdefault((month, camp_id, name), {'camp_name': row.campaign.name, 'cat': cat, 'conv': 0, 'val': 0})
                 ec['conv'] += conv; ec['val'] += val
+                day = str(row.segments.date)[:10]
+                if day >= day_floor:
+                    ed = conv_day.setdefault((day, name), {'cat': cat, 'conv': 0})
+                    ed['conv'] += conv
         for (month, name), e in conv_by.items():
             db.execute("""
                 INSERT INTO ads_conversions_monthly (client_id, month, action_name, category, conversions, conv_value)
@@ -167,7 +174,15 @@ def run_for_client(client, months=MONTHS):
                 ON DUPLICATE KEY UPDATE campaign_name=VALUES(campaign_name), category=VALUES(category),
                     conversions=VALUES(conversions), conv_value=VALUES(conv_value)
             """, [client['id'], month, camp_id, e['camp_name'][:255], name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
-        print(f"  · conversiones por tipo: {len(conv_by)} · por campaña: {len(conv_camp)} filas")
+        for (day, name), e in conv_day.items():
+            if e['conv'] <= 0:
+                continue
+            db.execute("""
+                INSERT INTO ads_conv_daily (client_id, date, action_name, category, conversions)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions)
+            """, [client['id'], day, name[:255], e['cat'], round(e['conv'], 2)])
+        print(f"  · conversiones por tipo: {len(conv_by)} · por campaña: {len(conv_camp)} · por día: {len(conv_day)} filas")
     except Exception as e:
         print(f"  ⚠ conversiones por tipo no disponibles: {e}")
 
