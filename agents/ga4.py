@@ -214,6 +214,33 @@ def run_for_client(client, months=MONTHS):
     except Exception as e:
         print(f"    (sin desglose por país: {e})")
 
+    # ── Consulta 4: conversiones por EVENTO y canal (organic/paid) → ga4_conv_event_monthly ──
+    try:
+        req4 = RunReportRequest(
+            property=property_id, date_ranges=date_range,
+            dimensions=[Dimension(name='yearMonth'), Dimension(name='sessionDefaultChannelGroup'), Dimension(name='eventName')],
+            metrics=[Metric(name='conversions')],
+        )
+        resp4 = ga.run_report(req4)
+        agg = {}
+        for row in resp4.rows:
+            m = ym(row.dimension_values[0].value)
+            ch = row.dimension_values[1].value
+            ev = (row.dimension_values[2].value or '')[:120]
+            cv = round(_num(row.metric_values[0].value), 2)
+            if m not in monthly or cv <= 0 or not ev:
+                continue
+            chan = 'organic' if ch == 'Organic Search' else ('paid' if is_paid(ch) else 'other')
+            agg[(m, chan, ev)] = agg.get((m, chan, ev), 0.0) + cv
+        db.execute("DELETE FROM ga4_conv_event_monthly WHERE client_id = ?", [client['id']])
+        if agg:
+            crows = [[client['id'], k[0], k[1], k[2], round(v, 2)] for k, v in agg.items()]
+            db.execute_many("""INSERT INTO ga4_conv_event_monthly (client_id, month, channel, event_name, conversions)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE conversions=VALUES(conversions)""", crows)
+    except Exception as e:
+        print(f"    (sin conversiones por evento: {e})")
+
     last = sorted(monthly.keys())[-1]
     print(f"  ✓ {client['name']}: {len(rows)} meses · último {last} = {monthly[last]['sessions']} sesiones")
     save_run(client['id'], 'success', {'property': prop, 'months': months},
