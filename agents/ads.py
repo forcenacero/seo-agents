@@ -79,7 +79,7 @@ def run_for_client(client, months=MONTHS):
     query = f"""
         SELECT campaign.id, campaign.name, campaign.status, segments.month,
                metrics.cost_micros, metrics.clicks, metrics.impressions,
-               metrics.conversions, metrics.conversions_value
+               metrics.conversions, metrics.conversions_value, metrics.all_conversions
         FROM campaign
         WHERE segments.date BETWEEN '{start}' AND '{end}'
     """
@@ -96,9 +96,10 @@ def run_for_client(client, months=MONTHS):
                 imp = row.metrics.impressions
                 conv = row.metrics.conversions
                 cval = row.metrics.conversions_value
-                m = by_month.setdefault(month, {'cost': 0, 'clicks': 0, 'impressions': 0, 'conversions': 0, 'conv_value': 0})
+                allc = row.metrics.all_conversions
+                m = by_month.setdefault(month, {'cost': 0, 'clicks': 0, 'impressions': 0, 'conversions': 0, 'conv_value': 0, 'all_conv': 0})
                 m['cost'] += cost; m['clicks'] += clk; m['impressions'] += imp
-                m['conversions'] += conv; m['conv_value'] += cval
+                m['conversions'] += conv; m['conv_value'] += cval; m['all_conv'] += allc
                 ck = (month, str(row.campaign.id))
                 c = by_camp.setdefault(ck, {'name': row.campaign.name, 'status': str(row.campaign.status.name),
                                             'cost': 0, 'clicks': 0, 'impressions': 0, 'conversions': 0, 'conv_value': 0})
@@ -113,12 +114,13 @@ def run_for_client(client, months=MONTHS):
     # guardar totales por mes
     for month, m in by_month.items():
         db.execute("""
-            INSERT INTO ads_metrics_monthly (client_id, month, currency, cost, clicks, impressions, conversions, conv_value, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            INSERT INTO ads_metrics_monthly (client_id, month, currency, cost, clicks, impressions, conversions, conv_value, all_conversions, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
             ON DUPLICATE KEY UPDATE currency=VALUES(currency), cost=VALUES(cost), clicks=VALUES(clicks),
-                impressions=VALUES(impressions), conversions=VALUES(conversions), conv_value=VALUES(conv_value), updated_at=NOW()
+                impressions=VALUES(impressions), conversions=VALUES(conversions), conv_value=VALUES(conv_value),
+                all_conversions=VALUES(all_conversions), updated_at=NOW()
         """, [client['id'], month, currency, round(m['cost'], 2), int(m['clicks']), int(m['impressions']),
-              round(m['conversions'], 2), round(m['conv_value'], 2)])
+              round(m['conversions'], 2), round(m['conv_value'], 2), round(m.get('all_conv', 0), 2)])
     # guardar por campaña
     for (month, camp_id), c in by_camp.items():
         db.execute("""
@@ -134,54 +136,56 @@ def run_for_client(client, months=MONTHS):
     #   - el total por (mes, acción)            -> ads_conversions_monthly   (agregando campañas)
     #   - el detalle por (mes, campaña, acción) -> ads_conv_campaign_monthly (para el desglose por campaña)
     try:
+        # metrics.all_conversions incluye las conversiones SECUNDARIAS (no contadas en la columna
+        # "Conversiones"). Guardamos ambas para poder mostrar todas y etiquetar primaria/secundaria.
         cquery = f"""
             SELECT campaign.id, campaign.name,
                    segments.conversion_action_name, segments.conversion_action_category,
                    segments.month, segments.date,
-                   metrics.conversions, metrics.conversions_value
+                   metrics.conversions, metrics.conversions_value, metrics.all_conversions
             FROM campaign
             WHERE segments.date BETWEEN '{start}' AND '{end}'
         """
-        conv_by = {}       # (month, name) -> {cat, conv, val}
-        conv_camp = {}     # (month, camp_id, name) -> {camp_name, cat, conv, val}
-        conv_day = {}      # (date, name) -> {cat, conv}  (últimos 95 días para el detalle por día)
+        conv_by = {}       # (month, name) -> {cat, conv, val, all}
+        conv_camp = {}     # (month, camp_id, name) -> {camp_name, cat, conv, all}
+        conv_day = {}      # (date, name) -> {cat, conv, all}  (últimos 95 días)
         day_floor = (date.today() - relativedelta(days=95)).isoformat()
         for batch in ga.search_stream(customer_id=cid, query=cquery):
             for row in batch.results:
                 month = str(row.segments.month)[:7]
                 name = row.segments.conversion_action_name or '(sin nombre)'
                 cat = getattr(row.segments.conversion_action_category, 'name', str(row.segments.conversion_action_category))
-                conv = row.metrics.conversions; val = row.metrics.conversions_value
-                e = conv_by.setdefault((month, name), {'cat': cat, 'conv': 0, 'val': 0})
-                e['conv'] += conv; e['val'] += val
+                conv = row.metrics.conversions; val = row.metrics.conversions_value; allc = row.metrics.all_conversions
+                e = conv_by.setdefault((month, name), {'cat': cat, 'conv': 0, 'val': 0, 'all': 0})
+                e['conv'] += conv; e['val'] += val; e['all'] += allc
                 camp_id = str(row.campaign.id)
-                ec = conv_camp.setdefault((month, camp_id, name), {'camp_name': row.campaign.name, 'cat': cat, 'conv': 0, 'val': 0})
-                ec['conv'] += conv; ec['val'] += val
+                ec = conv_camp.setdefault((month, camp_id, name), {'camp_name': row.campaign.name, 'cat': cat, 'conv': 0, 'all': 0})
+                ec['conv'] += conv; ec['all'] += allc
                 day = str(row.segments.date)[:10]
                 if day >= day_floor:
-                    ed = conv_day.setdefault((day, name), {'cat': cat, 'conv': 0})
-                    ed['conv'] += conv
+                    ed = conv_day.setdefault((day, name), {'cat': cat, 'conv': 0, 'all': 0})
+                    ed['conv'] += conv; ed['all'] += allc
         for (month, name), e in conv_by.items():
             db.execute("""
-                INSERT INTO ads_conversions_monthly (client_id, month, action_name, category, conversions, conv_value)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions), conv_value=VALUES(conv_value)
-            """, [client['id'], month, name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
+                INSERT INTO ads_conversions_monthly (client_id, month, action_name, category, conversions, conv_value, all_conversions)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions), conv_value=VALUES(conv_value), all_conversions=VALUES(all_conversions)
+            """, [client['id'], month, name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2), round(e['all'], 2)])
         for (month, camp_id, name), e in conv_camp.items():
             db.execute("""
-                INSERT INTO ads_conv_campaign_monthly (client_id, month, campaign_id, campaign_name, action_name, category, conversions, conv_value)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO ads_conv_campaign_monthly (client_id, month, campaign_id, campaign_name, action_name, category, conversions, conv_value, all_conversions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE campaign_name=VALUES(campaign_name), category=VALUES(category),
-                    conversions=VALUES(conversions), conv_value=VALUES(conv_value)
-            """, [client['id'], month, camp_id, e['camp_name'][:255], name[:255], e['cat'], round(e['conv'], 2), round(e['val'], 2)])
+                    conversions=VALUES(conversions), all_conversions=VALUES(all_conversions)
+            """, [client['id'], month, camp_id, e['camp_name'][:255], name[:255], e['cat'], round(e['conv'], 2), 0, round(e['all'], 2)])
         for (day, name), e in conv_day.items():
-            if e['conv'] <= 0:
+            if e['all'] <= 0:
                 continue
             db.execute("""
-                INSERT INTO ads_conv_daily (client_id, date, action_name, category, conversions)
-                VALUES (?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions)
-            """, [client['id'], day, name[:255], e['cat'], round(e['conv'], 2)])
+                INSERT INTO ads_conv_daily (client_id, date, action_name, category, conversions, all_conversions)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE category=VALUES(category), conversions=VALUES(conversions), all_conversions=VALUES(all_conversions)
+            """, [client['id'], day, name[:255], e['cat'], round(e['conv'], 2), round(e['all'], 2)])
         print(f"  · conversiones por tipo: {len(conv_by)} · por campaña: {len(conv_camp)} · por día: {len(conv_day)} filas")
     except Exception as e:
         print(f"  ⚠ conversiones por tipo no disponibles: {e}")
