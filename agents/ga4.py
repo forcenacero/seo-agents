@@ -79,6 +79,13 @@ def is_paid(channel):
     return ch.startswith('paid') or ch in ('display', 'cross-network')
 
 
+def is_organic(channel):
+    # SEO/GEO: búsqueda orgánica + asistentes de IA (ChatGPT, Perplexity… = canal "AI Assistant" de GA4,
+    # fruto del trabajo de posicionamiento). NO incluye Organic Social/Video ni Direct.
+    ch = (channel or '').lower()
+    return ch == 'organic search' or 'ai assistant' in ch or ch == 'organic ai'
+
+
 def run_for_client(client, months=MONTHS):
     prop = str(client.get('ga4_property_id') or '').strip().replace('properties/', '')
     if not prop:
@@ -154,7 +161,7 @@ def run_for_client(client, months=MONTHS):
                 continue
             s = int(_num(row.metric_values[0].value))
             cv = round(_num(row.metric_values[1].value), 2) if len(ch_metrics) > 1 else 0.0
-            if channel == 'Organic Search':
+            if is_organic(channel):
                 monthly[m]['organic_sessions'] += s
                 monthly[m]['organic_conversions'] += cv
             elif is_paid(channel):
@@ -230,7 +237,7 @@ def run_for_client(client, months=MONTHS):
             cv = round(_num(row.metric_values[0].value), 2)
             if m not in monthly or cv <= 0 or not ev:
                 continue
-            chan = 'organic' if ch == 'Organic Search' else ('paid' if is_paid(ch) else 'other')
+            chan = 'organic' if is_organic(ch) else ('paid' if is_paid(ch) else 'other')
             agg[(m, chan, ev)] = agg.get((m, chan, ev), 0.0) + cv
         db.execute("DELETE FROM ga4_conv_event_monthly WHERE client_id = ?", [client['id']])
         if agg:
@@ -262,7 +269,7 @@ def run_for_client(client, months=MONTHS):
                 continue
             slot = daily.setdefault(d_iso, [0.0, 0.0, 0.0])
             slot[2] += cv
-            if ch == 'Organic Search':
+            if is_organic(ch):
                 slot[0] += cv
             elif is_paid(ch):
                 slot[1] += cv
