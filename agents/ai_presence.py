@@ -12,6 +12,8 @@ Guarda por mes en `ai_geo_checks`:
   - answer_excerpt = extracto de la respuesta de la IA
 
 Esto convierte la "presencia en IA" de una heurística (ai_likely) en una señal real.
+Cada consulta se lanza AI_PRESENCE_RUNS veces (3 por defecto): mentioned = mayoría de
+pasadas, rank = mediana, y answer_excerpt empieza por «[Te cita en X/N pasadas]».
 
 Uso:
   python agents/ai_presence.py [client_id] [--limit N]
@@ -22,6 +24,7 @@ import json
 import re
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -36,6 +39,10 @@ API_KEY = os.getenv('GEMINI_API_KEY')
 # Modelo con soporte de grounding (Google Search). Configurable por si cambia el catálogo.
 MODEL = os.getenv('GEMINI_GROUNDING_MODEL', 'gemini-3.6-flash')
 MAX_QUERIES = int(os.getenv('AI_PRESENCE_MAX_QUERIES', '12'))
+# Pasadas por consulta: la respuesta de Gemini varía mucho entre llamadas (con 1 sola pasada
+# una consulta pasa de #1 a "no aparece" de un mes a otro sin cambiar nada). Con varias,
+# "te cita" = citado en la mayoría de pasadas y la posición es la mediana.
+RUNS = max(1, int(os.getenv('AI_PRESENCE_RUNS', '3')))
 MONTH = date.today().strftime('%Y-%m')
 ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}"
 
@@ -120,21 +127,41 @@ def run_for_client(client, limit=MAX_QUERIES):
     checked = 0
     mentioned = 0
     for q in queries:
-        text, domains = ground(q)
-        if text is None:
+        runs = []   # (is_mentioned, rank, domains, text) por pasada
+        with ThreadPoolExecutor(RUNS) as ex:   # pasadas en paralelo: mismo tiempo que 1 sola
+            results = list(ex.map(ground, [q] * RUNS))
+        for text, domains in results:
+            if text is None:
+                continue
+            rank = None
+            for i, dom in enumerate(domains):
+                if cdom and (cdom in dom or dom in cdom):
+                    rank = i + 1
+                    break
+            brand_in_text = bool(brand and len(brand) > 2 and brand in (text or '').lower())
+            cdom_in_text = bool(cdom and cdom in (text or '').lower())
+            runs.append((rank is not None or brand_in_text or cdom_in_text, rank, domains, text))
+        if not runs:
             continue
         checked += 1
-        rank = None
-        for i, dom in enumerate(domains):
-            if cdom and (cdom in dom or dom in cdom):
-                rank = i + 1
-                break
-        brand_in_text = bool(brand and len(brand) > 2 and brand in (text or '').lower())
-        cdom_in_text = bool(cdom and cdom in (text or '').lower())
-        is_mentioned = rank is not None or brand_in_text or cdom_in_text
+        hits = sum(1 for r in runs if r[0])
+        is_mentioned = hits * 2 > len(runs)
+        ranks = sorted(r[1] for r in runs if r[1] is not None)
+        rank = ranks[(len(ranks) - 1) // 2] if (is_mentioned and ranks) else None
+        # Dominios de todas las pasadas, ordenados por nº de pasadas en que salen y luego por posición media.
+        seen = {}
+        for _, _, doms, _ in runs:
+            for i, dom in enumerate(doms):
+                n, pos = seen.get(dom, (0, 0))
+                seen[dom] = (n + 1, pos + i)
+        domains = sorted(seen, key=lambda d: (-seen[d][0], seen[d][1] / seen[d][0]))
+        text = next((r[3] for r in runs if r[0] == is_mentioned), runs[0][3])
+        if len(runs) > 1:
+            text = f"[Te cita en {hits}/{len(runs)} pasadas] " + (text or '')
         if is_mentioned:
             mentioned += 1
-        print(f"    {'✓' if is_mentioned else '·'} {q[:48]:48} {'#'+str(rank) if rank else ('marca' if is_mentioned else 'no aparece')} · {len(domains)} fuentes")
+        time.sleep(1.5)   # ritmo suave
+        print(f"    {'✓' if is_mentioned else '·'} {q[:48]:48} {'#'+str(rank) if rank else ('marca' if is_mentioned else 'no aparece')} · {hits}/{len(runs)} pasadas · {len(domains)} fuentes")
         db.execute("""
             INSERT INTO ai_geo_checks (client_id, month, query, engine, mentioned, `rank`, cited_domains, answer_excerpt, checked_at)
             VALUES (?, ?, ?, 'gemini_grounded', ?, ?, ?, ?, NOW())
@@ -143,7 +170,13 @@ def run_for_client(client, limit=MAX_QUERIES):
                 cited_domains = VALUES(cited_domains), answer_excerpt = VALUES(answer_excerpt), checked_at = NOW()
         """, [cid, MONTH, q[:255], 1 if is_mentioned else 0, rank,
               json.dumps(domains, ensure_ascii=False), (text or '')[:800]])
-        time.sleep(1.5)   # ritmo suave
+
+    if checked:
+        # El top de consultas cambia con GSC: si el agente se relanza en el mismo mes, quitar las
+        # filas de consultas que ya no están en la lista para que el panel no sume de más.
+        ph = ','.join(['?'] * len(queries))
+        db.execute(f"DELETE FROM ai_geo_checks WHERE client_id = ? AND month = ? AND query NOT IN ({ph})",
+                   [cid, MONTH] + [q[:255] for q in queries])
 
     pct = round(mentioned / checked * 100) if checked else 0
     print(f"  → {mentioned}/{checked} consultas te citan ({pct}%)")
@@ -166,7 +199,7 @@ def main():
     else:
         clients = db.query("SELECT id, domain, name FROM clients WHERE active = 1 ORDER BY id")
 
-    print(f"Presencia en IA · modelo {MODEL} · mes {MONTH} · {len(clients)} cliente(s)")
+    print(f"Presencia en IA · modelo {MODEL} · {RUNS} pasadas/consulta · mes {MONTH} · {len(clients)} cliente(s)")
     for c in clients:
         try:
             run_for_client(c, limit)
