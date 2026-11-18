@@ -103,15 +103,29 @@ def ground(query):
         return None, None
 
 
+QUERIES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'ai_queries.json')
+FOREIGN_DOMAIN_RE = re.compile(r'\b[a-z0-9-]+\.(com|es|net|org|io|co|fr|eu|cat)\b')
+
+
 def top_queries(client_id):
-    """Consultas más importantes del cliente (GSC: por impresiones, últimos 90 días)."""
+    """Consultas a medir: lista fija de config/ai_queries.json si el cliente la tiene; si no, las de
+    GSC con más impresiones (90 días), descartando las que no son búsquedas reales de negocio:
+    preguntas de examen copiadas (más de 8 palabras) y consultas sobre dominios ajenos."""
+    try:
+        fixed = json.load(open(QUERIES_FILE, encoding='utf-8')).get(str(client_id))
+    except (OSError, ValueError):
+        fixed = None
+    if fixed:
+        return fixed
     rows = db.query("""
         SELECT keyword, SUM(impressions) impr
         FROM metrics_keywords_daily
         WHERE client_id = ? AND date >= (CURRENT_DATE - INTERVAL 90 DAY) AND keyword <> ''
         GROUP BY keyword ORDER BY impr DESC LIMIT ?
-    """, [client_id, MAX_QUERIES])
-    return [r['keyword'] for r in rows]
+    """, [client_id, MAX_QUERIES * 4])
+    out = [r['keyword'] for r in rows
+           if len(r['keyword'].split()) <= 8 and not FOREIGN_DOMAIN_RE.search(r['keyword'].lower())]
+    return out[:MAX_QUERIES]
 
 
 def run_for_client(client, limit=MAX_QUERIES):
@@ -119,7 +133,9 @@ def run_for_client(client, limit=MAX_QUERIES):
     cdom = registrable(client.get('domain', ''))
     brand = (client.get('name', '') or '').lower()
     print(f"\n{'='*60}\n  Presencia en IA · {client['name']} ({cdom})\n{'='*60}")
-    queries = top_queries(cid)[:limit]
+    queries = top_queries(cid)
+    if limit != MAX_QUERIES:
+        queries = queries[:limit]
     if not queries:
         print("  ✓ Sin consultas (no hay datos GSC).")
         return {'checked': 0, 'mentioned': 0}

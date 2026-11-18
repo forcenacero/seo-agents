@@ -1,0 +1,18 @@
+{
+  "_comentario": "Consultas fijas por client_id para agents/ai_presence.py. Si un cliente no está aquí se usan sus consultas GSC con más impresiones (filtradas). Útil cuando el top de GSC son consultas informativas de glosario que no reflejan el negocio.",
+  "1": [
+    "akoma",
+    "grupo akoma",
+    "operador logístico barcelona",
+    "empresas de logística en barcelona",
+    "almacenes logisticos en barcelona",
+    "operador logistico vallès",
+    "3pl logistica barcelona",
+    "almacenaje barcelona",
+    "almacenaje de palets barcelona",
+    "logistica para el sector cosmetico",
+    "distribucion de productos de parafarmacia",
+    "logistica para retail textil",
+    "logística alimentaria"
+  ]
+}
